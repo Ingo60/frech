@@ -1,8 +1,9 @@
 --- Basic data structures for the Chess engine
-module frech.Data where
+module frech.Data 
+    inline (Position.figures) where
 
 import Data.Bits
-import Data.Bits (BitSet.union union, 
+import Data.Bits public (BitSet.union union, 
                     BitSet.member member, 
                     BitSet.difference diff, 
                     BitSet.intersection inter)
@@ -10,6 +11,19 @@ import Data.Bits (BitSet.union union,
 infixl 13 union diff
 infixl 14 inter
 
+{--
+    # Geometry of the board
+    
+    > Rows  -- 8 --- -- 7 --- -- 6 --- -- 5 --- -- 4 --- -- 3 --- -- 2 --- -- 1 ---
+    > Files hgfedcba hgfedcba hgfedcba hgfedcba hgfedcba hgfedcba hgfedcba hgfedcba
+    > Bits  ........ ........ ........ ........ ........ ........ ........ ........
+    > 2^   63     56       48       40       32       24       16        8         0
+    
+    This means, a step to the *right* (i.e. a1-b1) corresponds to a *left* shift,
+    a step to the *left* (i.e. g7-f7) corresponds to a *right* shift,
+    a step to towards the eighth row (i.e. e4-e5) corresponds to 8 *left* shifts,
+    and a step towards the first row (i.e. c8-c7) corresponds to 8 *right* shifts.
+--}
 data Index  = A1 | B1 | C1 | D1 | E1 | F1 | G1 | H1
             | A2 | B2 | C2 | D2 | E2 | F2 | G2 | H2
             | A3 | B3 | C3 | D3 | E3 | F3 | G3 | H3
@@ -75,36 +89,65 @@ data Position = P {
     !flags   ::  Fields,
     --- Tells the fields that are occupied by white figures
     !whites  ::  Fields,
-    --- Tells the fields that are occupied by 'PAWN's
-    !pawns   ::  Fields,
-    --- Tells the fields that are occupied by 'KNIGHT's
-    !knights ::  Fields,
-    --- Tells the fields that are occupied by 'BISHOP's
-    !bishops ::  Fields,
-    --- Tells the fields that are occupied by 'ROOK's
-    !rooks ::  Fields,
-    --- Tells the fields that are occupied by 'QUEEN's
-    !queens ::  Fields,
-    --- Tells the fields that are occupied by 'KING's
-    !kings ::  Fields
-
+    {-- 
+        For encoding of figures, we use only 3 sets instead of 6, namely        
+        'Position.pawnSet', Position.bishopSet' and 'Position.rookSet', with the following
+        convention:
+        
+        > Set       P      B     R
+        > PAWN      x      -     -
+        > KNIGHT    x      x     -
+        > BISHOP    -      x     -
+        > ROOK      -      -     x
+        > QUEEN     -      x     x
+        > KING      x      -     x
+    
+    --}
+    !pawnSet, !bishopSet, !rookSet :: Fields,
   } where
+    
+    --- Tell the fields occupied by 'PAWN's
+    --- 'PAWN's have a bit in 'Position.pawnSet' only.
+    pawns p = pawnSet p `diff` bishopSet p `diff` rookSet p
+    
+    --- Tell the fields occupied by 'KNIGHT's
+    --- 'KNIGHT's have a bit in 'Position.pawnSet' and 'Position.bishopSet' but not in 'Position.rookSet'.
+    knights p = (pawnSet p `inter` bishopSet p) `diff` rookSet p
+    
+    --- Tell the fields occupied by 'BISHOP's
+    --- 'BISHOPS's have a bit in 'Position.bishopSet' only.
+    bishops p = (bishopSet p `diff` pawnSet p) `diff` rookSet p
+
+    --- Tell the fields occupied by 'BISHOP's
+    --- 'BISHOPS's have a bit in 'Position.bishopSet' only.
+    rooks p = (rookSet p `diff` pawnSet p) `diff` bishopSet p
+
+    --- Tell the fields occupied by 'QUEEN's
+    --- 'QUEEN's have a bit both in 'Position.rookSet' and 'Position.bishopSet', but not in 'Position.pawnSet' 
+    queens p = (bishopSet p `inter` rookSet p) `diff` pawnSet p
+    
+    --- Tell the fields occupied by 'KING's
+    --- 'KING's have a bit both in 'Position.pawnSet' and 'Position.rookSet', but not in 'Position.bishopSet'.
+    kings p = (rookSet p `inter` pawnSet p) `diff` bishopSet p
+
+    
     --- constant bitmask for selection of the castling information
-    !castling = BitSet.singleton G1 
+    !castlingBits = BitSet.singleton G1 
                 `union` BitSet.singleton C1 
                 `union` BitSet.singleton G8
                 `union` BitSet.singleton C8
     
-    enPassantBlackPawn = [A6 .. H6]
-    enPassantWhitePawn = [A3 .. H3]
-    !enPassantFields = BitSet.fromList (enPassantBlackPawn ++ enPassantWhitePawn)
+    !enPassantBits = BitSet.fromList (enPassantBlackPawn ++ enPassantWhitePawn)
+        where
+            enPassantBlackPawn = [A6 .. H6]
+            enPassantWhitePawn = [A3 .. H3]
 
     --- tell who's turn it is    
     turn p = if A1 `member` Position.flags p then WHITE else BLACK
     
     --- all figures
     figures :: Position → Fields
-    figures p = p.pawns `union` p.knights `union` p.bishops `union` p.rooks `union` p.queens `union` p.kings
+    figures p = p.pawnSet `union` p.bishopSet `union` p.rookSet
     
     --- white figures
     whiteFigures p = figures p `inter` whites p
@@ -117,7 +160,7 @@ data Position = P {
     --- figures of the player whose turn it is
     activeFigures p = playerFigures p (turn p)
     
-
+deriving Show Position
 
 data Figure = PAWN | KNIGHT | BISHOP | ROOK | QUEEN | KING
 deriving Enum Figure
@@ -130,3 +173,7 @@ instance Show Figure where
     show KING   = "K"
 
 data FigInfo = FI {!player :: Player, !figure :: Figure, !wo :: Index }
+
+
+main = do
+    println (P empty empty empty empty empty)
