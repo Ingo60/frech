@@ -1,12 +1,14 @@
 --- Basic data structures for the Chess engine
 module frech.Data 
-    inline (Position.figures) where
+    inline (Position.figures, decodeFigure, member, singleton, whatIsOn) where
 
 import Data.Bits
 import Data.Bits public (BitSet.union union, 
-                    BitSet.member member, 
+                    -- BitSet.member member, 
                     BitSet.difference diff, 
-                    BitSet.intersection inter)
+                    BitSet.intersection inter,
+                    -- BitSet.singleton singleton
+                    )
 
 infixl 13 union diff
 infixl 14 inter
@@ -60,6 +62,14 @@ pure native bitNum java.lang.Long.numberOfTrailingZeros :: Long -> Int
 bitIndex :: Fields → Index
 bitIndex = Index.toEnumCast . bitNum . BitSet.set
 
+--- make a singleton 'Fields' set
+singleton :: Index -> Fields
+singleton x = BitSet (1L `shiftL` ord x)
+
+--- is some 'Index' member of a 'Fields' set?
+member :: Index -> Fields -> Bool
+member i s = ((1L `shiftL` ord i) .&. BitSet.set s) != 0
+
 --- A bit set for sets of fields
 type Fields = BitSet Index
 
@@ -68,6 +78,17 @@ data Player = BLACK | WHITE
 deriving Enum Player
 deriving Show Player
 
+--- The shade of fields
+data Shade = LIGHT | DARK
+instance Show Shade where
+    show LIGHT = "░"
+    show DARK  = "▒"
+    
+indexShade ∷ Index → Shade
+indexShade n = if even row == even col then DARK else LIGHT 
+    where
+        row = ord n `shiftR` 3
+        col = ord n .&. 7
 
 {--
     A position contains information about all figures on the board,
@@ -159,21 +180,68 @@ data Position = P {
         BLACK → blackFigures pos
     --- figures of the player whose turn it is
     activeFigures p = playerFigures p (turn p)
+
     
 deriving Show Position
 
-data Figure = PAWN | KNIGHT | BISHOP | ROOK | QUEEN | KING
+data Figure = EMPTY | PAWN | KNIGHT | BISHOP | ROOK | QUEEN | KING
 deriving Enum Figure
 instance Show Figure where
+    show EMPTY  = "?"
     show PAWN   = "P"
     show KNIGHT = "N"
     show BISHOP = "B"
     show ROOK   = "R"
     show QUEEN  = "Q"
     show KING   = "K"
+    
+--- Answer to the question "What is on field xy?"
+--- If it's 'EMPTY', the 'FigInfo.player' is meaningless. 
+data FigInfo = FI {!player :: Player, !figure :: Figure, !wo :: Fields }
+-- ♔♕♖♗♘♙♚♛♜♝♞♟
 
-data FigInfo = FI {!player :: Player, !figure :: Figure, !wo :: Index }
+showUTF ∷ FigInfo → String
+showUTF fi = case fi.figure of 
+    PAWN    → if fi.player == WHITE then "♙" else "♟"
+    KNIGHT  → if fi.player == WHITE then "♘" else "♞"
+    BISHOP  → if fi.player == WHITE then "♗" else "♝"
+    ROOK    → if fi.player == WHITE then "♖" else "♜"
+    QUEEN   → if fi.player == WHITE then "♕" else "♛"
+    KING    → if fi.player == WHITE then "♔" else "♚"
+    EMPTY   → show . indexShade . bitIndex $ fi.wo 
+
+--- what figure is it, based on combination of pawn, bishop and rook bit?
+decodeFigure !pawn !bish !rook = 
+    if pawn 
+        then if bish
+            then if rook then EMPTY else KNIGHT
+            else if rook then KING  else PAWN
+        else if bish
+            then if rook then QUEEN else BISHOP
+            else if rook then ROOK  else EMPTY
+
+
+
+--- tells what is on the field that is indicated by the (singleton) 'Fields' set.
+whatIs ∷ Position → Fields → FigInfo
+whatIs p f = FI {player, figure, wo}
+    where
+        wo = (singleton . bitIndex) f
+        player = if null (p.whites `inter` f) then BLACK else WHITE
+        pawn = not $ null (p.pawnSet `inter` f)
+        bish = not $ null (p.bishopSet `inter` f)
+        rook = not $ null (p.rookSet `inter` f)
+        figure = decodeFigure pawn bish rook
+
+--- tells what is on the field that is indicated by the 'Index'
+whatIsOn p = whatIs p . singleton
+
+drawBoard p = do
+    let indexes = [[A8…H8], [A7…H7], [A6…H6], [A5…H5], [A4…H4], [A3…H3], [A2…H2], [A1…H1]]
+        fis = map (map (showUTF . whatIsOn p)) indexes
+        lines = map (joined "") fis
+    mapM_ println lines
 
 
 main = do
-    println (P empty empty empty empty empty)
+    drawBoard (P empty empty empty empty empty)
