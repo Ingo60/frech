@@ -19,7 +19,7 @@ infixl 14 inter
     > Rows  -- 8 --- -- 7 --- -- 6 --- -- 5 --- -- 4 --- -- 3 --- -- 2 --- -- 1 ---
     > Files hgfedcba hgfedcba hgfedcba hgfedcba hgfedcba hgfedcba hgfedcba hgfedcba
     > Bits  ........ ........ ........ ........ ........ ........ ........ ........
-    > 2^   63     56       48       40       32       24       16        8         0
+    > 2^   63     56       48       40       32       24       16        8        0
     
     This means, a step to the *right* (i.e. a1-b1) corresponds to a *left* shift,
     a step to the *left* (i.e. g7-f7) corresponds to a *right* shift,
