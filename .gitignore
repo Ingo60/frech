@@ -1,2 +1,4 @@
 /bin/
-fregec.jar
+*.jar
+Makefile
+.classpath
