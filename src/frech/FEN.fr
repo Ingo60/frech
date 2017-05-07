@@ -1,0 +1,111 @@
+{--
+
+    # Forsyth-Edwards-Notation
+
+    from 'https://en.wikipedia.org/wiki/Forsyth%E2%80%93Edwards_Notation Wikipedia':
+
+    ...
+
+    Forsyth–Edwards Notation (FEN) is a standard notation for describing 
+    a particular board position of a chess game. The purpose of FEN is to 
+    provide all the necessary information to restart a game from a particular position.
+
+    ...
+
+    A FEN "record" defines a particular game position, 
+    all in one text line and using only the ASCII character set. 
+    A text file with only FEN data records should have the file extension ".fen".
+
+    A FEN record contains six fields. The separator between fields is a space. The fields are:
+
+    1. Piece placement (from white's perspective). Each rank is described, 
+    starting with rank 8 and ending with rank 1; within each rank, 
+    the contents of each square are described from file "a" through file "h". 
+    Following the Standard Algebraic Notation (SAN), 
+    each piece is identified by a single letter taken from the standard English names 
+    (pawn = "P", knight = "N", bishop = "B", rook = "R", queen = "Q" and king = "K").
+    White pieces are designated using upper-case letters ("PNBRQK") 
+    while black pieces use lowercase ("pnbrqk"). 
+    Empty squares are noted using digits 1 through 8 (the number of empty squares), 
+    and "/" separates ranks.
+
+    2. Active color. "w" means White moves next, "b" means Black.
+
+    3. Castling availability. If neither side can castle, this is "-". 
+    Otherwise, this has one or more letters: 
+    "K" (White can castle kingside), 
+    "Q" (White can castle queenside), 
+    "k" (Black can castle kingside), and/or 
+    "q" (Black can castle queenside).
+
+    4. En passant target square in algebraic notation. 
+    If there's no en passant target square, this is "-". 
+    If a pawn has just made a two-square move, this is the position "behind" the pawn. 
+    This is recorded regardless of whether there is a pawn in position to make an en passant capture.
+
+    5. Halfmove clock: This is the number of halfmoves since the last capture or pawn advance. 
+    This is used to determine if a draw can be claimed under the fifty-move rule.
+
+    6. Fullmove number: The number of the full move. It starts at 1, and is incremented after Black's move.
+-}
+
+module frech.FEN where
+
+import frech.Data
+
+
+--- the order of the fields as they appear in FEN
+fenOrder = join [[A8…H8], [A7…H7], [A6…H6], [A5…H5], [A4…H4], [A3…H3], [A2…H2], [A1…H1]]
+
+decodeFEN fen = case '\s+'.splitted fen of
+        [fen1,fen2,fen3,fen4,fen5,fen6] -> 
+            decodePlacement fenOrder (unpacked fen1) emptyBoard
+            >>= decodePlayer fen2
+            >>= decodeCastling (unpacked fen3)
+            >>= decodeEP fen4
+        _ -> Left "Invalid FEN: must be 6 space separated fields"
+    where
+        decodeCastling ['-'] p  = pure p
+        decodeCastling [] p     = pure p
+        decodeCastling (c:cs) p = case c of
+            'K' → decodeCastling cs p.{flags ← union (singleton G1)}
+            'Q' → decodeCastling cs p.{flags ← union (singleton C1)}
+            'k' → decodeCastling cs p.{flags ← union (singleton G8)}
+            'q' → decodeCastling cs p.{flags ← union (singleton C8)}
+            _   → Left ("Invalid FEN: illegal char in castling field " ++ show c)
+
+        decodeEP "-" p = pure p 
+        decodeEP fld p = case Index.read fld of
+            Just i → pure p.{flags ← union (singleton i)}
+            Nothing → Left ("Invalid FEN: bad en passant field " ++ show fld)
+
+        decodePlayer "b" p = pure p
+        decodePlayer "w" p = pure p.{flags ← union (singleton A1)}
+        decodePlayer bad p = Left ("Invalid FEN: second field must be \"w\" or \"b\", found "
+                                    ++ show bad) 
+        decodePlacement  []      []          p = Right p
+        decodePlacement  []      (_:cs)      p = Left  "Invalid FEN: placement string too long"
+        decodePlacement  (i:is)  []          p = Left ("Invalid FEN: positions " 
+                                                        ++ show (i:is) ++ " missing")
+        -- neither is nor cs maybe empty from here on
+        decodePlacement  (i:is) (c:cs)       p
+            | c > '0' && c < '9' = decodePlacement (drop (ord c - ord '1') is) cs p
+            | otherwise = case c of
+                'K' -> decodePlacement is cs (place WHITE KING wo p)
+                'Q' -> decodePlacement is cs (place WHITE QUEEN wo p)
+                'R' -> decodePlacement is cs (place WHITE ROOK wo p)
+                'B' -> decodePlacement is cs (place WHITE BISHOP wo p)
+                'N' -> decodePlacement is cs (place WHITE KNIGHT wo p)
+                'P' -> decodePlacement is cs (place WHITE PAWN wo p)
+                'k' -> decodePlacement is cs (place BLACK KING wo p)
+                'q' -> decodePlacement is cs (place BLACK QUEEN wo p)
+                'r' -> decodePlacement is cs (place BLACK ROOK wo p)
+                'b' -> decodePlacement is cs (place BLACK BISHOP wo p)
+                'n' -> decodePlacement is cs (place BLACK KNIGHT wo p)
+                'p' -> decodePlacement is cs (place BLACK PAWN wo p)
+                '/' | i `elem` [A7, A6, A5, A4, A3, A2, A1] = decodePlacement (i:is) cs p 
+                    | otherwise = Left ("Invalid FEN: expected placement for " 
+                                    ++ show i ++ ", found '/'")
+                _  -> Left ("Invalid FEN: bad placement character " ++ show c) 
+            where
+                wo = singleton i
