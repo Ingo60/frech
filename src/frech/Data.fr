@@ -184,8 +184,15 @@ data Position = P {
     
 deriving Show Position
 
-data Figure = EMPTY | PAWN | KNIGHT | BISHOP | ROOK | QUEEN | KING
-deriving Enum Figure
+data Figure = EMPTY | PAWN | KNIGHT | BISHOP | ROOK | QUEEN | KING where
+    pure native (==) "=="     :: Figure -> Figure -> Bool
+    pure native (!=) "!="     :: Figure -> Figure -> Bool
+    pure native hashCode "(short)" :: Figure -> Int
+
+instance Eq Figure
+derive Ord Figure
+derive Enum Figure
+
 instance Show Figure where
     show EMPTY  = "?"
     show PAWN   = "P"
@@ -246,7 +253,7 @@ whatIsOn p = whatIs p . singleton
 --- place a 'Player's 'Figure' on a certain field
 --- *Note*: cannot be used to remove a figure
 place ∷ Player → Figure → Fields → Position → Position
-place player figure mask p = P{flags, whites, pawnSet, bishopSet, rookSet}
+place player figure !mask p = P{flags, whites, pawnSet, bishopSet, rookSet}
     where 
         flags  = Position.flags p
         whites = if player == WHITE then p.whites `union` mask else p.whites
