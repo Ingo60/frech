@@ -35,9 +35,10 @@ data Index  = A1 | B1 | C1 | D1 | E1 | F1 | G1 | H1
             | A7 | B7 | C7 | D7 | E7 | F7 | G7 | H7
             | A8 | B8 | C8 | D8 | E8 | F8 | G8 | H8
             where
-                pure native toEnumCast "(short)" :: Int -> Index
-                toEnum n | n >= 0 && n < 64 = toEnumCast n
-                         | otherwise        = error ("Index.toEnum: bad index " 
+                pure native unsafeFrom "(short)" :: Int -> Index
+                pure native ord  "(int)"   :: Index -> Int
+                from n | n Int.>= 0 && n Int.< 64 = unsafeFrom n
+                         | otherwise        = error ("Index.from: bad index " 
                                                 ++ show n 
                                                 ++ " (must be 0..63)")
                 read :: String  → Maybe Index
@@ -45,10 +46,27 @@ data Index  = A1 | B1 | C1 | D1 | E1 | F1 | G1 | H1
                         '^[a-h][1-8]$' = Just $ toEnum ((row `shiftL` 3) + col)
                         other          = Nothing
                     where
-                        row = ord (s.charAt 1) - ord '1'
-                        col = ord (s.charAt 0) - ord 'a'
+                        row = Char.ord (s.charAt 1) - Char.ord '1'
+                        col = Char.ord (s.charAt 0) - Char.ord 'a'
+                pure native (==)        "=="                :: Index -> Index -> Bool
+                pure native (!=)        "!="                :: Index -> Index -> Bool
+                pure native hashCode    "(short)"           :: Index -> Int
+                pure native (<)         "<"                 :: Index -> Index -> Bool
+                pure native (>)         ">"                 :: Index -> Index -> Bool
+                pure native (>=)        ">="                :: Index -> Index -> Bool
+                pure native (<=)        "<="                :: Index -> Index -> Bool
+                i1 <=> i2 = if i1 < i2 then LT else if i1 > i2 then GT else EQ
+                succ = from . (1+) . ord
+                pred = from . (1-) . ord
+                enumFromThen !i1 !i2 = enumFromThenTo i1 i2 (if i1 < i2 then H8 else A1)
+                enumFromThenTo !i1 !i2 !i3 = map from (Int.enumFromThenTo (ord i1) (ord i2) (ord i3)) 
 
-deriving Enum Index
+
+instance Eq Index
+instance Ord Index
+instance Enum Index
+
+
 instance Show Index where
     show n = String.format "%c%c" (chr col) (chr row) :: String
         where
@@ -60,7 +78,7 @@ pure native bitNum java.lang.Long.numberOfTrailingZeros :: Long -> Int
 
 --- give the 'Index' of the lowest bit. The 'Fields' set must not be empty!
 bitIndex :: Fields → Index
-bitIndex = Index.toEnumCast . bitNum . BitSet.set
+bitIndex = Index.unsafeFrom . bitNum . BitSet.set
 
 --- make a singleton 'Fields' set
 singleton :: Index -> Fields
@@ -270,6 +288,8 @@ place player figure !mask p = P{flags, whites, pawnSet, bishopSet, rookSet}
 placeFigure :: FigInfo → Position → Position
 placeFigure fi p = place fi.player fi.figure fi.wo p
 
+pure native knightTargets frech.MDB.knightTargets :: Index → Fields
+
 drawBoard p = do
     let indexes = [[A8…H8], [A7…H7], [A6…H6], [A5…H5], [A4…H4], [A3…H3], [A2…H2], [A1…H1]]
         fis = map (map (showUTF . whatIsOn p)) indexes
@@ -280,3 +300,4 @@ emptyBoard = (P empty empty empty empty empty)
 
 main = do
     drawBoard emptyBoard
+    println (knightTargets E4)
