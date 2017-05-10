@@ -1,6 +1,6 @@
 --- Basic data structures for the Chess engine
 module frech.Data 
-    inline (Position.figures, decodeFigure, member, singleton, whatIsOn) where
+    inline (Position.figures, decodeFigure, member, singleton, whatIsOn, bitIndex) where
 
 import Data.Bits
 import Data.Bits public (BitSet.union union, 
@@ -74,11 +74,12 @@ instance Show Index where
             col = ord 'a' + (ord n .&. 7)
 
 --- gives the bit number of the lowest bit
-pure native bitNum java.lang.Long.numberOfTrailingZeros :: Long -> Int
+-- pure native bitNum java.lang.Long.numberOfTrailingZeros :: Long -> Int
+pure native setNum java.lang.Long.numberOfTrailingZeros :: Fields -> Int
 
 --- give the 'Index' of the lowest bit. The 'Fields' set must not be empty!
 bitIndex :: Fields → Index
-bitIndex = Index.unsafeFrom . bitNum . BitSet.set
+bitIndex = Index.unsafeFrom . setNum
 
 --- make a singleton 'Fields' set
 singleton :: Index -> Fields
@@ -288,7 +289,31 @@ place player figure !mask p = P{flags, whites, pawnSet, bishopSet, rookSet}
 placeFigure :: FigInfo → Position → Position
 placeFigure fi p = place fi.player fi.figure fi.wo p
 
-pure native knightTargets frech.MDB.knightTargets :: Index → Fields
+--- The set of fields a 'KNIGHT' on some 'Index' can go to
+pure native knightTargets   frech.MDB.knightTargets   :: Index → Fields
+
+--- The set of fields a 'KING' on some 'Index' can go to
+pure native kingTargets     frech.MDB.kingTargets     :: Index → Fields
+
+--- The set of fields a 'ROOK' on some 'Index' can go to if there are no non 'EMPTY' fields. 
+pure native rookTargets     frech.MDB.rookTargets     :: Index → Fields
+
+--- The set of fields a 'BISHOP' on some 'Index' can go to if there are no non 'EMPTY' fields.
+pure native bishopTargets   frech.MDB.bishopTargets   :: Index → Fields
+
+--- The set of fields that must be 'EMPTY' to make a 'BISHOP' move valid.
+--- Returns a set with all fields if the move is never valid, for example
+--- > canBishop A1 A2 == BitSet 0xFFFFFFFFFFFFFFFFL
+--- > canBishop A1 B2 == empty  -- no EMPTY fields required
+--- > canBishop A1 C3 == singleton B2
+pure native canBishop       frech.MDB.canBishop       :: Index → Index → Fields
+
+--- The set of fields that must be 'EMPTY' to make a 'ROOK' move valid.
+--- Returns a set with all fields if the move is never valid, for example
+--- > canRook A1 B2 == BitSet 0xFFFFFFFFFFFFFFFFL
+--- > canRook A1 A2 == empty  -- no EMPTY fields required
+--- > canRook A1 C1 == singleton B1
+pure native canRook         frech.MDB.canRook         :: Index → Index → Fields
 
 drawBoard p = do
     let indexes = [[A8…H8], [A7…H7], [A6…H6], [A5…H5], [A4…H4], [A3…H3], [A2…H2], [A1…H1]]
@@ -296,8 +321,36 @@ drawBoard p = do
         lines = map (joined "") fis
     mapM_ println lines
 
+
+
+foldFields ∷ (Fields→α→α) → α → Fields → α
+foldFields !f a !s 
+    | null s = a
+    | otherwise = foldFields f (f m a) s'
+        where
+            !m  = singleton (bitIndex s)
+            s' = s `diff` m
+
+foldIndexes ∷ (Index→α→α) → α → Fields → α
+foldIndexes !f a !s 
+    | null s = a
+    | otherwise = foldIndexes f (f m a) s'
+        where
+            !m  = bitIndex s
+            s' = s `diff` singleton m
+
+
 emptyBoard = (P empty empty empty empty empty)
 
 main = do
     drawBoard emptyBoard
+    print "Knight: "
     println (knightTargets E4)
+    print "King: "
+    println (kingTargets E4)
+    print "Rook: "
+    println (rookTargets E4)
+    print "Bishop: "
+    println (bishopTargets E4)
+    let b = foldFields (place BLACK PAWN) emptyBoard (bishopTargets E4)
+    drawBoard (place WHITE BISHOP (singleton E4) b)
