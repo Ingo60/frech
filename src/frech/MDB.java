@@ -63,6 +63,7 @@ public class MDB {
 	private static long bishopTo[];
 	private static long rookTo[];
 	private static long knightTo[];
+	private static long kingTo[];
 	
 	/**
 	 * 
@@ -96,6 +97,13 @@ public class MDB {
 	 */
 	public static long rookTargets(int from) {
 		return rookTo[from];
+	}
+	
+	/**
+	 * @see kingTo
+	 */
+	public static long kingTargets(int from) {
+		return kingTo[from];
 	}
 	
 	/**
@@ -222,9 +230,22 @@ public class MDB {
 		}
 	}
 	
+	public static void genKing() {
+		kingTo = new long[64];
+		final int[] directions = new int[] {NORTH, NE, EAST, SE, SOUTH, SW, WEST, NW };
+		for (long from = 1L; from != 0; from <<= 1) {
+			for (int d:directions) {
+				if (canGo(from, d)) {
+					long to = goTowards(from, d);
+					kingTo[setToIndex(from)] |= to;
+				}
+			}
+		}
+	}
 	
 	public static String showf(int field) {
 		return String.format("%c%d", 'a' + (field & 7), 1 + (field >> 3));
+		
 	}
 	
 	public static String showSet(long x) {
@@ -243,6 +264,7 @@ public class MDB {
 		genBishop();
 		genRook();
 		genKnight();
+		genKing();
 	}
 	
 	public static void main(String[] args) {
