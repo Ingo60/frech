@@ -269,22 +269,25 @@ whatIs p f = FI {player, figure, wo}
 --- tells what is on the field that is indicated by the 'Index'
 whatIsOn p = whatIs p . singleton
 
---- place a 'Player's 'Figure' on a certain field
---- *Note*: cannot be used to remove a figure
+--- Place a 'Player's 'Figure' on a certain field or many fields at once.
+--- If there is something on the target field(s), it will be removed.
+--- It is possible to place 'EMPTY', in this case, 'Player' will be ignored.
 place ∷ Player → Figure → Fields → Position → Position
-place player figure !mask p = P{flags, whites, pawnSet, bishopSet, rookSet}
+place !player !figure !mask !p = P{flags, whites, pawnSet, bishopSet, rookSet}
     where 
         flags  = Position.flags p
-        whites = if player == WHITE then p.whites `union` mask else p.whites
+        whites = if player == WHITE && figure != EMPTY 
+                    then p.whites `union` mask 
+                    else p.whites `diff`  mask
         pawnSet = if figure == PAWN || figure == KING || figure == KNIGHT
                     then p.pawnSet `union` mask
-                    else p.pawnSet
+                    else p.pawnSet `diff`  mask
         bishopSet = if figure == BISHOP || figure == QUEEN || figure == KNIGHT
                     then p.bishopSet `union` mask
-                    else p.bishopSet
+                    else p.bishopSet `diff`  mask
         rookSet = if figure == ROOK  || figure == QUEEN || figure == KING
                     then p.rookSet `union` mask
-                    else p.rookSet 
+                    else p.rookSet `diff`  mask
 
 placeFigure :: FigInfo → Position → Position
 placeFigure fi p = place fi.player fi.figure fi.wo p
@@ -340,7 +343,21 @@ foldIndexes !f a !s
             s' = s `diff` singleton m
 
 
-emptyBoard = (P empty empty empty empty empty)
+!emptyBoard = (P empty empty empty empty empty)
+!initialBoard = Position.{flags = singleton A1 `union` Position.castlingBits} 
+               . place WHITE PAWN (BitSet.fromList [A2, B2, C2, D2, E2, F2, G2, H2])
+               . place BLACK PAWN (BitSet.fromList [A7, B7, C7, D7, E7, F7, G7, H7])
+               . place WHITE KING (singleton E1)
+               . place BLACK KING (singleton E8)
+               . place WHITE QUEEN (singleton D1)
+               . place BLACK QUEEN (singleton D8)
+               . place WHITE ROOK (BitSet.fromList [A1, H1])
+               . place BLACK ROOK (BitSet.fromList [A8, H8])
+               . place WHITE BISHOP (BitSet.fromList [B1, G1])
+               . place BLACK BISHOP (BitSet.fromList [B8, G8])
+               . place WHITE KNIGHT (BitSet.fromList [C1, F1])
+               . place BLACK KNIGHT (BitSet.fromList [C8, F8]) 
+               $ emptyBoard
 
 main = do
     drawBoard emptyBoard
