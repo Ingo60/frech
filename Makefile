@@ -4,8 +4,8 @@
 FREGEC = fregec.jar
 PROGUARD = ~/bin/proguard.jar
 SHRINK = ../shrink/bin/shrink-1.0.0-standalone.jar
-ENTRY = frech.Data
-MAINCLASS = bin/frech/Data.class
+ENTRY = frech.Daten
+MAINCLASS = bin/frech/Daten.class
 
 all: /home/ingo/bin/frech.jar
 
@@ -20,7 +20,7 @@ frech.jar: $(MAINCLASS)
 	jar -uvf frech.jar -C bin frech
 	jar -uvfe frech.jar $(ENTRY)
 
-$(MAINCLASS):  src/frech/Data.fr src/frech/FEN.fr src/frech/MDB.java
+$(MAINCLASS):  src/frech/Daten.fr src/frech/FEN.fr src/frech/MDB.java
 	mkdir -p bin
 	rm -rf bin/frech
-	java -jar $(FREGEC) -d bin -sp src/ -O -make $(ENTRY)
+	java8 -jar $(FREGEC) -d bin -sp src/ -O -make $(ENTRY)
