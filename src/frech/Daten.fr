@@ -97,6 +97,9 @@ data Player = BLACK | WHITE where
     pure native (==) "=="     :: Player -> Player -> Bool
     pure native (!=) "!="     :: Player -> Player -> Bool
     pure native hashCode "(short)" :: Player -> Int
+    
+    opponent BLACK = WHITE
+    opponent WHITE = BLACK
 -- instance Eq Player
 -- deriving Ord Player
 deriving Enum Player
@@ -187,6 +190,12 @@ data Position = P {
             enPassantBlackPawn = [A6 .. H6]
             enPassantWhitePawn = [A3 .. H3]
 
+    --- tell if an index is empty 
+    empty p index = not (index `member` figures p)
+    
+    --- tell if all members of the set are empty
+    allEmpty p fields = null (fields `inter` figures p)  
+
     --- tell who's turn it is    
     turn p = if A1 `member` Position.flags p then WHITE else BLACK
     
@@ -208,16 +217,16 @@ data Position = P {
     
 deriving Show Position
 
-data Figure = EMPTY | PAWN | KNIGHT | BISHOP | ROOK | QUEEN | KING where
-    pure native (==) "=="     :: Figure -> Figure -> Bool
-    pure native (!=) "!="     :: Figure -> Figure -> Bool
-    pure native hashCode "(short)" :: Figure -> Int
+data Piece = EMPTY | PAWN | KNIGHT | BISHOP | ROOK | QUEEN | KING where
+    pure native (==) "=="     :: Piece -> Piece -> Bool
+    pure native (!=) "!="     :: Piece -> Piece -> Bool
+    pure native hashCode "(short)" :: Piece -> Int
 
-instance Eq Figure
-derive Ord Figure
-derive Enum Figure
+instance Eq Piece
+derive Ord Piece
+derive Enum Piece
 
-instance Show Figure where
+instance Show Piece where
     show EMPTY  = "?"
     show PAWN   = "P"
     show KNIGHT = "N"
@@ -228,20 +237,64 @@ instance Show Figure where
     
 --- Answer to the question "What is on field xy?"
 --- If it's 'EMPTY', the 'FigInfo.player' is meaningless. 
-data FigInfo = FI {!player :: Player, !figure :: Figure, !wo :: Fields }
+data FigInfo = FI {!player :: Player, !piece :: Piece, !wo :: Fields }
 
 
 --- representation of a move
-data Move = M {!player :: Player, !figure :: Figure, !from, !to :: Index } where
-    (==) ∷ Move → Move → Bool
+data Move = M {!player ∷ Player, !piece, !promote ∷ Piece, !from, !to ∷ Index } where
+    (==), (!=) ∷ Move → Move → Bool
     m1 == m2 = m1.player Player.== m2.player 
-            && m1.figure Figure.== m2.figure 
+            && m1.piece   Piece.== m2.piece
+            && m1.promote Piece.== m2.promote 
             && m1.from    Index.== m2.from 
             && m1.to      Index.== m2.to
+    m1 != m2 = m1.player Player.!= m2.player 
+            || m1.piece   Piece.!= m2.piece 
+            || m1.from    Index.!= m2.from 
+            || m1.promote Piece.!= m2.promote
+            || m1.to      Index.!= m2.to
+    hashCode m = ((m.player.hashCode * 31 + m.piece.hashCode) * 31 + m.from.hashCode) * 31 + m.to.hashCode
+instance Eq Move
+deriving Show Move
+
+moves ∷ Position → [Move]
+moves p = foldFields (genMove p) [] p.activeFigures
+
+genMove p m ms = foldIndexes (addMove p pc) ms targets
+    where
+        !pc      = whatIs p m
+        !index   = bitIndex pc.wo
+        !targets = case pc.piece of 
+            PAWN   → if pc.player == WHITE then whitePawnTargets index else blackPawnTargets index
+            KNIGHT → knightTargets  index
+            BISHOP → bishopTargets  index
+            ROOK   → rookTargets    index
+            QUEEN  → bishopTargets  index `union` rookTargets index
+            KING   → kingTargets    index
+            EMPTY  → empty
+
+addMove ∷ Position → FigInfo → Index → [Move] → [Move]
+addMove p pc to ms = case pc.piece of
+        PAWN  -> let 
+                    !es = if pc.player == WHITE then canWhitePawn from to else canBlackPawn from to
+                    !valid = if null es 
+                        then    to `member` p.playerFigures pc.player.opponent 
+                             || to `member` (p.flags `inter` Position.enPassantBits) 
+                        else p.allEmpty es
+                    !promotion = if pc.player == WHITE then to.rank == 8 else to.rank == 1
+                in
+                    if valid 
+                        then if promotion 
+                            then fold (\ms x -> move x !: ms) ms [QUEEN, ROOK, KNIGHT, BISHOP]
+                            else move EMPTY !: ms
+                        else ms
+    where
+        move !x = M {player = pc.player, piece = pc.piece, promote = x, from, to}
+        !from = bitIndex pc.wo   
 -- ♔♕♖♗♘♙♚♛♜♝♞♟
 
 showUTF ∷ FigInfo → String
-showUTF fi = case fi.figure of 
+showUTF fi = case fi.piece of 
     PAWN    → if fi.player == WHITE then "♙" else "♟"
     KNIGHT  → if fi.player == WHITE then "♘" else "♞"
     BISHOP  → if fi.player == WHITE then "♗" else "♝"
@@ -250,7 +303,7 @@ showUTF fi = case fi.figure of
     KING    → if fi.player == WHITE then "♔" else "♚"
     EMPTY   → show . indexShade . bitIndex $ fi.wo 
 
---- what figure is it, based on combination of pawn, bishop and rook bit?
+--- what piece is it, based on combination of pawn, bishop and rook bit?
 decodeFigure !pawn !bish !rook = 
     if pawn 
         then if bish
@@ -271,40 +324,45 @@ decodeF _     _     _     = EMPTY
 
 --- tells what is on the field that is indicated by the (singleton) 'Fields' set.
 whatIs ∷ Position → Fields → FigInfo
-whatIs p f = FI {player, figure, wo}
+whatIs p f = FI {player, piece, wo}
     where
         wo = (singleton . bitIndex) f
         player = if null (p.whites `inter` f) then BLACK else WHITE
         pawn = not $ null (p.pawnSet `inter` f)
         bish = not $ null (p.bishopSet `inter` f)
         rook = not $ null (p.rookSet `inter` f)
-        figure = decodeFigure pawn bish rook
+        piece = decodeFigure pawn bish rook
 
 --- tells what is on the field that is indicated by the 'Index'
 whatIsOn p = whatIs p . singleton
 
---- Place a 'Player's 'Figure' on a certain field or many fields at once.
+--- Place a 'Player's 'Piece' on a certain field or many fields at once.
 --- If there is something on the target field(s), it will be removed.
 --- It is possible to place 'EMPTY', in this case, 'Player' will be ignored.
-place ∷ Player → Figure → Fields → Position → Position
-place !player !figure !mask !p = P{flags, whites, pawnSet, bishopSet, rookSet}
+place ∷ Player → Piece → Fields → Position → Position
+place !player !piece !mask !p = P{flags, whites, pawnSet, bishopSet, rookSet}
     where 
         flags  = Position.flags p
-        whites = if player == WHITE && figure != EMPTY 
+        whites = if player == WHITE && piece != EMPTY 
                     then p.whites `union` mask 
                     else p.whites `diff`  mask
-        pawnSet = if figure == PAWN || figure == KING || figure == KNIGHT
+        pawnSet = if piece == PAWN || piece == KING || piece == KNIGHT
                     then p.pawnSet `union` mask
                     else p.pawnSet `diff`  mask
-        bishopSet = if figure == BISHOP || figure == QUEEN || figure == KNIGHT
+        bishopSet = if piece == BISHOP || piece == QUEEN || piece == KNIGHT
                     then p.bishopSet `union` mask
                     else p.bishopSet `diff`  mask
-        rookSet = if figure == ROOK  || figure == QUEEN || figure == KING
+        rookSet = if piece == ROOK  || piece == QUEEN || piece == KING
                     then p.rookSet `union` mask
                     else p.rookSet `diff`  mask
 
 placeFigure :: FigInfo → Position → Position
-placeFigure fi p = place fi.player fi.figure fi.wo p
+placeFigure fi p = place fi.player fi.piece fi.wo p
+
+--- The set of fields a 'WHITE' 'PAWN' on some 'Index' can go potentially
+pure native whitePawnTargets    frech.MDB.whitePawnTargets ∷ Index → Fields
+--- The set of fields a 'BLACK' 'PAWN' on some 'Index' can go potentially
+pure native blackPawnTargets    frech.MDB.blackPawnTargets ∷ Index → Fields
 
 --- The set of fields a 'KNIGHT' on some 'Index' can go to
 pure native knightTargets   frech.MDB.knightTargets   :: Index → Fields
@@ -331,6 +389,13 @@ pure native canBishop       frech.MDB.canBishop       :: Index → Index → Fie
 --- > canRook A1 A2 == empty  -- no EMPTY fields required
 --- > canRook A1 C1 == singleton B1
 pure native canRook         frech.MDB.canRook         :: Index → Index → Fields
+
+--- The set of fields that must be 'EMPTY' to make a 'WHITE' 'PAWN' move valid.
+--- Returns a set with all bits set if the move is never valid.
+--- Returns 'empty' if this is a capturing move, it needs to check in addition whether the target is occupied by the opponent.
+--- Returns the target and the skipped field, if any, for forward moves.
+pure native canWhitePawn    frech.MDB.canWhitePawn  ∷ Index → Index → Fields
+pure native canBlackPawn    frech.MDB.canBlackPawn  ∷ Index → Index → Fields 
 
 drawBoard p = do
     let indexes = [[A8…H8], [A7…H7], [A6…H6], [A5…H5], [A4…H4], [A3…H3], [A2…H2], [A1…H1]]
