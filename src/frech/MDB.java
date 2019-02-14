@@ -53,6 +53,8 @@ public class MDB {
 	 */
 	private static long bishopFromTo[];
 	private static long rookFromTo[];
+	private static long whitePawnFromTo[];
+	private static long blackPawnFromTo[];
 	
 	/***
 	 * <p>Set of fields that can in principle be reached by a Bishop from a certain field.</p>
@@ -64,6 +66,8 @@ public class MDB {
 	private static long rookTo[];
 	private static long knightTo[];
 	private static long kingTo[];
+	private static long whitePawnTo[];
+	private static long blackPawnTo[];
 	
 	/**
 	 * 
@@ -81,6 +85,34 @@ public class MDB {
 	 */
 	public static long canRook(int from, int to) {
 		return rookFromTo[(from<<6)+to];
+	}
+	
+	/**
+	 * @see canBishop
+	 */
+	public static long canWhitePawn(int from, int to) {
+		return whitePawnFromTo[(from<<6)+to];
+	}
+
+	/**
+	 * @see canBishop
+	 */
+	public static long canBlackPawn(int from, int to) {
+		return blackPawnFromTo[(from<<6)+to];
+	}
+
+	/**
+	 * @see whitePawnTo
+	 */
+	public static long whitePawnTargets(int from) {
+		return whitePawnTo[from];
+	}
+	
+	/**
+	 * @see blackPawnTo
+	 */
+	public static long blackPawnTargets(int from) {
+		return blackPawnTo[from];
 	}
 	
 	/**
@@ -154,6 +186,67 @@ public class MDB {
 			&& canGo(goTowards(from, direction), direction);
 	}
 	
+	public static void genPawn() {
+		whitePawnTo = new long[64];
+		whitePawnFromTo = new long[64*64];
+		blackPawnTo = new long[64];
+		blackPawnFromTo = new long[64*64];
+
+		// mark all moves illegal
+		for (int i=0; i<whitePawnFromTo.length; i++) whitePawnFromTo[i] = blackPawnFromTo[i] = -1L;
+		for (int i=0; i<whitePawnTo.length;i++)      whitePawnTo[i]     = blackPawnTo[i]     = 0L;
+		long from = 0L;
+		
+		for (from = 0x100L; from < 0x0100000000000000L; from <<= 1) {
+			long mask = 0L;
+			long to   = 0L;
+			if (canGo(from, NORTH)) {
+				to = goTowards(from, NORTH);
+				whitePawnTo[setToIndex(from)] |= to;
+				whitePawnFromTo[(setToIndex(from)<<6) + setToIndex(to)] = to;
+				if ((from & 0xff00L) != 0 && canGo(to, NORTH)) {
+					// A2..H2 second rank
+					mask = to;
+					to = goTowards(to, NORTH);
+					whitePawnTo[setToIndex(from)] |= to;
+					whitePawnFromTo[(setToIndex(from)<<6) + setToIndex(to)] = to | mask;
+				}
+			}
+			if (canGo(from, SOUTH)) {
+				to = goTowards(from, SOUTH);
+				blackPawnTo[setToIndex(from)] |= to;
+				blackPawnFromTo[(setToIndex(from)<<6) + setToIndex(to)] = to;
+				if ((from & 0x00ff000000000000L) != 0 && canGo(to, SOUTH)) {
+					// A7..H7 seventh rank
+					mask = to;
+					to = goTowards(to, SOUTH);
+					blackPawnTo[setToIndex(from)] |= to;
+					blackPawnFromTo[(setToIndex(from)<<6) + setToIndex(to)] = to | mask;
+				}
+			}
+			if (canGo(from, NE)) {
+				to = goTowards(from, NE);
+				whitePawnTo[setToIndex(from)] |= to;
+				whitePawnFromTo[(setToIndex(from)<<6) + setToIndex(to)] = 0L;
+			}
+			if (canGo(from, NW)) {
+				to = goTowards(from, NW);
+				whitePawnTo[setToIndex(from)] |= to;
+				whitePawnFromTo[(setToIndex(from)<<6) + setToIndex(to)] = 0L;
+			}
+			if (canGo(from, SE)) {
+				to = goTowards(from, SE);
+				blackPawnTo[setToIndex(from)] |= to;
+				blackPawnFromTo[(setToIndex(from)<<6) + setToIndex(to)] = 0L;
+			}
+			if (canGo(from, SW)) {
+				to = goTowards(from, SW);
+				blackPawnTo[setToIndex(from)] |= to;
+				blackPawnFromTo[(setToIndex(from)<<6) + setToIndex(to)] = 0L;
+			}
+		}
+	}
+	
 	public static void genBishop() {
 		bishopFromTo = new long[64*64];
 		bishopTo     = new long[64];
@@ -162,7 +255,7 @@ public class MDB {
 		// mark all moves illegal
 		for (int i=0; i<bishopFromTo.length; i++) bishopFromTo[i] = -1L; 
 		
-		long from = 1;
+		long from = 0L;
 		
 		for (from = 1L; from != 0L; from <<= 1) {    	// for all fields
 			long mask = 0L;
@@ -265,6 +358,7 @@ public class MDB {
 		genRook();
 		genKnight();
 		genKing();
+		genPawn();
 	}
 	
 	public static void main(String[] args) {
