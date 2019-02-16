@@ -92,6 +92,8 @@ member i s = ((1L `shiftL` ord i) .&. BitSet.set s) != 0
 --- A bit set for sets of fields
 type Fields = BitSet Index
 
+allFields = BitSet (-1L) :: Fields
+
 --- The players taking part in the game
 data Player = BLACK | WHITE where
     pure native (==) "=="     :: Player -> Player -> Bool
@@ -260,7 +262,7 @@ deriving Show Move
 moves ∷ Position → [Move]
 moves p = foldFields (genMove p) [] p.activeFigures
 
-genMove p m ms = foldIndexes (addMove p pc) ms targets
+genMove p m ms = foldIndexes (addMove p pc) ms validTargets
     where
         !pc      = whatIs p m
         !index   = bitIndex pc.wo
@@ -272,10 +274,12 @@ genMove p m ms = foldIndexes (addMove p pc) ms targets
             QUEEN  → bishopTargets  index `union` rookTargets index
             KING   → kingTargets    index
             EMPTY  → empty
+        !validTargets = targets `diff` p.activeFigures
+
 
 addMove ∷ Position → FigInfo → Index → [Move] → [Move]
 addMove p pc to ms = case pc.piece of
-        PAWN  -> let 
+        PAWN  → let 
                     !es = if pc.player == WHITE then canWhitePawn from to else canBlackPawn from to
                     !valid = if null es 
                         then    to `member` p.playerFigures pc.player.opponent 
@@ -288,6 +292,12 @@ addMove p pc to ms = case pc.piece of
                             then fold (\ms x -> move x !: ms) ms [QUEEN, ROOK, KNIGHT, BISHOP]
                             else move EMPTY !: ms
                         else ms
+        BISHOP → if p.allEmpty (canBishop from to)  then move EMPTY !: ms else ms
+        ROOK   → if p.allEmpty (canRook from to)    then move EMPTY !: ms else ms
+        QUEEN  → if p.allEmpty (canBishop from to) || p.allEmpty (canRook from to)   
+                                                    then move EMPTY !: ms else ms
+        other → move EMPTY !: ms
+        
     where
         move !x = M {player = pc.player, piece = pc.piece, promote = x, from, to}
         !from = bitIndex pc.wo   
@@ -441,10 +451,10 @@ filterFields !f !s = go f s empty
                . place BLACK QUEEN (singleton D8)
                . place WHITE ROOK (BitSet.fromList [A1, H1])
                . place BLACK ROOK (BitSet.fromList [A8, H8])
-               . place WHITE BISHOP (BitSet.fromList [B1, G1])
-               . place BLACK BISHOP (BitSet.fromList [B8, G8])
-               . place WHITE KNIGHT (BitSet.fromList [C1, F1])
-               . place BLACK KNIGHT (BitSet.fromList [C8, F8]) 
+               . place WHITE KNIGHT (BitSet.fromList [B1, G1])
+               . place BLACK KNIGHT (BitSet.fromList [B8, G8])
+               . place WHITE BISHOP (BitSet.fromList [C1, F1])
+               . place BLACK BISHOP (BitSet.fromList [C8, F8]) 
                $ emptyBoard
 
 main = do
