@@ -303,6 +303,79 @@ addMove p pc to ms = case pc.piece of
         !from = bitIndex pc.wo   
 -- ♔♕♖♗♘♙♚♛♜♝♞♟
 
+attacked, attackedByPawns, attackedByBishops, attackedByRooks,
+    attackedByBishopsOrQueens, attackedByRooksOrQueens, 
+    attackedByQueens, attackedByKnights, attackedByKings ∷ Position → Index → Player → Fields 
+
+
+{-- 
+    Given a 'Position', an 'Index' and a 'Player' computes the 'Fields' that are occupied  by 'Player'
+    and contain a 'Piece' that could move to 'Index' (and capture).
+    
+    Note that computation for 'QUEEN', 'ROOK' and 'BISHOP' attackers require two loops.
+    Therefore, whenever one just needs to know *if* the 'Index' is attacked or not, use 'isAttacked'
+--} 
+attacked p wo durch = if durch == WHITE then attackers `inter` p.whites else attackers `diff` p.whites
+    where
+        attackers = attackedByPawns p wo durch
+                    `union` attackedByKnights p wo durch `union` attackedByKings p wo durch
+                    `union` attackedByBishopsOrQueens p wo durch `union` attackedByRooksOrQueens p wo durch  
+
+--- See 'attacked', but reports attacks by 'PAWN's only. O(1)
+attackedByPawns p wo durch = p.pawns `inter` attackers where
+    !attackers = if durch == BLACK then attackingBlackPawns wo else attackingWhitePawns wo
+
+--- See 'attacked', but reports attacks by 'KNIGHT's only. O(1)
+attackedByKnights p wo durch = if durch == WHITE    then attackers `inter` p.whites 
+                                                    else attackers `diff`  p.whites
+    where attackers = p.knights `inter` knightTargets wo
+
+--- See 'attacked', but reports attacks by 'KING's only. O(1)
+attackedByKings   p wo durch = if durch == WHITE    then attackers `inter` p.whites 
+                                                    else attackers `diff`  p.whites
+    where attackers = p.kings   `inter` kingTargets wo
+
+--- See 'attacked', but reports attacks by 'BISHOP's only. Needs 1 bitset fold.
+attackedByBishops p wo durch = validBishopTargets p wo pieces  
+    where pieces = if durch == WHITE    then p.bishops `inter` p.whites
+                                        else p.bishops `diff`  p.whites
+
+--- See 'attacked', but reports attacks by 'ROOK's only. Needs 1 bitset fold.
+attackedByRooks   p wo durch = validRookTargets p wo pieces
+    where pieces = if durch == WHITE    then p.rooks `inter` p.whites
+                                        else p.rooks `diff`  p.whites
+
+--- See 'attacked', but reports attacks by 'QUEEN's only. Needs 2 bitset folds. 
+attackedByQueens  p wo durch = validBishopTargets p wo pieces `union` validRookTargets p wo pieces 
+    where pieces = if durch == WHITE    then p.queens `inter` p.whites
+                                        else p.queens `diff`  p.whites
+
+--- Like 'attackedByBishops', but reports also 'QUEEN's that attack through 'BISHOP' moves. Needs 1 bitset fold
+attackedByBishopsOrQueens p wo durch = validBishopTargets p wo pieces 
+    where pieces = if durch == WHITE    then (p.bishops   `union` p.queens) `inter` p.whites 
+                                        else (p.bishops   `union` p.queens) `diff`  p.whites
+
+--- Like 'attackedByRooks', but reports also 'QUEEN's that attack through 'ROOK' moves. Needs 1 bitset fold.
+attackedByRooksOrQueens   p wo durch = validRookTargets  p wo pieces
+    where pieces = if durch == WHITE    then (p.rooks   `union` p.queens) `inter` p.whites 
+                                        else (p.rooks   `union` p.queens) `diff`  p.whites
+
+--- Like 'attacked', but returns just *whether* the 'Index' is attacked by 'Player'.
+--- This may save bitset folds when the 'Index' is indeed attacked by 'PAWN's, 'KNIGHT's or a 'KING'.
+isAttacked ∷ Position → Index → Player → Bool
+isAttacked p wo durch =    not (null (attackedByPawns           p wo durch))
+                        || not (null (attackedByKnights         p wo durch)) 
+                        || not (null (attackedByKings           p wo durch)) 
+                        || not (null (attackedByBishopsOrQueens p wo durch)) 
+                        || not (null (attackedByRooksOrQueens   p wo durch)) 
+
+--- checks if the 'KING' of some 'Player' stands in check
+inCheck ∷ Position → Player → Bool
+inCheck p player = isAttacked p king player.opponent
+    where 
+        !kings = if player == WHITE then p.kings `inter` p.whites else p.kings `diff` p.whites
+        !king  = bitIndex kings
+
 showUTF ∷ FigInfo → String
 showUTF fi = case fi.piece of 
     PAWN    → if fi.player == WHITE then "♙" else "♟"
@@ -440,10 +513,38 @@ filterFields !f !s = go f s empty
     where
         go ∷ (Index→Bool) → Fields → Fields → Fields
         go !f !s !r
+            | null s    = r
+            | f to      = go f (s `diff` m) (r `union` m)
+            | otherwise = go f (s `diff` m) r 
+            where
+                !to = bitIndex s 
+                !m  = singleton to    
+
+validBishopTargets, validRookTargets ∷ Position → Index → Fields → Fields
+--- Computes where a 'BISHOP' on a given 'Index' actually can go in the 'Position', but restricted to certain fields.
+validBishopTargets p from mask = go p (mask `inter` bishopTargets from) empty 
+    where
+        go ∷ Position → Fields → Fields → Fields
+        go !p !s !r
             | null s = r
-            | f (bitIndex s) = go f (s `diff` m) (r `union` m)
-            | otherwise      = go f (s `diff` m) r 
-            where m = singleton (bitIndex s)  
+            | p.allEmpty (canBishop from to)    = go p (s `diff` m) (r `union` m)
+            | otherwise                         = go p (s `diff` m)  r
+            where
+                !to = bitIndex s 
+                !m  = singleton to    
+
+--- Computes where a 'ROOK' on a given 'Index' actually can go in the 'Position', but restricted to certain fields.
+validRookTargets p from mask = go p (mask `inter` rookTargets from) empty 
+    where
+        go ∷ Position → Fields → Fields → Fields
+        go !p !s !r
+            | null s = r
+            | p.allEmpty (canRook from to)  = go p (s `diff` m) (r `union` m)
+            | otherwise                     = go p (s `diff` m)  r
+            where
+                !to = bitIndex s 
+                !m  = singleton to    
+
 
 !emptyBoard = (P empty empty empty empty empty)
 !initialBoard = Position.{flags = singleton A1 `union` Position.castlingBits} 
