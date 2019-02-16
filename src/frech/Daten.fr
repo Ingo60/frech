@@ -407,6 +407,10 @@ pure native canRook         frech.MDB.canRook         :: Index → Index → Fie
 pure native canWhitePawn    frech.MDB.canWhitePawn  ∷ Index → Index → Fields
 pure native canBlackPawn    frech.MDB.canBlackPawn  ∷ Index → Index → Fields 
 
+--- The set of fields from where a WHITE/BLACK pawn could attack
+pure native attackingWhitePawns frech.MDB.targetOfWhitePawns ∷ Index → Fields
+pure native attackingBlackPawns frech.MDB.targetOfBlackPawns ∷ Index → Fields 
+
 drawBoard p = do
     let indexes = [[A8…H8], [A7…H7], [A6…H6], [A5…H5], [A4…H4], [A3…H3], [A2…H2], [A1…H1]]
         fis = map (map (showUTF . whatIsOn p)) indexes

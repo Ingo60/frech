@@ -69,6 +69,17 @@ public class MDB {
 	private static long whitePawnTo[];
 	private static long blackPawnTo[];
 	
+	/***
+	 * <p>The inverse of whitePawnTo/blackPawnTo: if there is a black/white pawn on any of the
+	 * indicated fields, then the given field is attacked.</p>
+	 * 
+	 *  <p>We need this only for pawns, since the moves of all other pieces are symmetric, that is,
+	 *  for example, the set of fields an index can be attacked from with a bishop is the same as
+	 *  the set of fields a bishop on index can go to.</p>
+	 */
+	private static long whitePawnFrom[];
+	private static long blackPawnFrom[];
+	
 	/**
 	 * 
 	 * @param from index (0..63) of source field
@@ -115,6 +126,20 @@ public class MDB {
 		return blackPawnTo[from];
 	}
 	
+	/**
+	 * @see blackPawnFrom
+	 */
+	public static long targetOfBlackPawns(int to) {
+		return blackPawnFrom[to];
+	}
+	
+	/**
+	 * @see whitePawnFrom
+	 */
+	public static long targetOfWhitePawns(int to) {
+		return whitePawnFrom[to];
+	}
+
 	/**
 	 * 
 	 * @see bishopTo
@@ -188,13 +213,16 @@ public class MDB {
 	
 	public static void genPawn() {
 		whitePawnTo = new long[64];
+		whitePawnFrom = new long[64];
 		whitePawnFromTo = new long[64*64];
 		blackPawnTo = new long[64];
+		blackPawnFrom = new long[64];
 		blackPawnFromTo = new long[64*64];
 
 		// mark all moves illegal
 		for (int i=0; i<whitePawnFromTo.length; i++) whitePawnFromTo[i] = blackPawnFromTo[i] = -1L;
 		for (int i=0; i<whitePawnTo.length;i++)      whitePawnTo[i]     = blackPawnTo[i]     = 0L;
+		for (int i=0; i<whitePawnTo.length;i++)      whitePawnFrom[i]   = blackPawnFrom[i]   = 0L;
 		long from = 0L;
 		
 		for (from = 0x100L; from < 0x0100000000000000L; from <<= 1) {
@@ -227,21 +255,25 @@ public class MDB {
 			if (canGo(from, NE)) {
 				to = goTowards(from, NE);
 				whitePawnTo[setToIndex(from)] |= to;
+				whitePawnFrom[setToIndex(to)] |= from;
 				whitePawnFromTo[(setToIndex(from)<<6) + setToIndex(to)] = 0L;
 			}
 			if (canGo(from, NW)) {
 				to = goTowards(from, NW);
 				whitePawnTo[setToIndex(from)] |= to;
+				whitePawnFrom[setToIndex(to)] |= from;
 				whitePawnFromTo[(setToIndex(from)<<6) + setToIndex(to)] = 0L;
 			}
 			if (canGo(from, SE)) {
 				to = goTowards(from, SE);
 				blackPawnTo[setToIndex(from)] |= to;
+				blackPawnFrom[setToIndex(to)] |= from;
 				blackPawnFromTo[(setToIndex(from)<<6) + setToIndex(to)] = 0L;
 			}
 			if (canGo(from, SW)) {
 				to = goTowards(from, SW);
 				blackPawnTo[setToIndex(from)] |= to;
+				blackPawnFrom[setToIndex(to)] |= from;
 				blackPawnFromTo[(setToIndex(from)<<6) + setToIndex(to)] = 0L;
 			}
 		}
