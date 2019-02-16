@@ -51,7 +51,7 @@
 
 module frech.FEN where
 
-import frech.Data
+import frech.Daten
 
 
 --- the order of the fields as they appear in FEN
