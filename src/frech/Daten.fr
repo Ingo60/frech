@@ -493,13 +493,38 @@ whiteToMove ∷ Fields
                
 !whiteToMove = singleton A1
 !blackToMove = empty :: Fields
--- !clearOnShortWhiteCastling = BitSet.fromList [E1, F1, G1, H1]
--- !clearOnLongWhiteCastling  = BitSet.fromList [E1, D1, C1, B1, A1]
--- !clearOnShortBlackCastling = BitSet.fromList [E8, F8, G8, H8]
--- !clearOnLongBlackCastling  = BitSet.fromList [E8, D8, C8, B8, A8]
 !whiteCastlingRights = BitSet.fromList [C1, G1]
 !blackCastlingRights = BitSet.fromList [C8, G8]
--- !rookFields = BitSet.fromList [A8, H8, A1, H1]
+
+--- Move sequences for castlings consist of 3 moves to get the "who is to move" bit right.
+--- Castling rights are taken care of by the ordinary move logic.
+--- Since this happens maybe once in a game, efficiency is less important.
+!whiteShortCastlingMove1 = M{player=WHITE, piece=KING, promote=EMPTY, from=E1, to=F1}
+!whiteShortCastlingMove2 = M{player=WHITE, piece=KING, promote=EMPTY, from=F1, to=G1}
+!whiteShortCastlingMove3 = M{player=WHITE, piece=ROOK, promote=EMPTY, from=H1, to=F1}
+whiteShortCastling =  applyMove whiteShortCastlingMove3
+                    . applyMove whiteShortCastlingMove2
+                    . applyMove whiteShortCastlingMove1
+
+!whiteLongCastlingMove1 = M{player=WHITE, piece=KING, promote=EMPTY, from=E1, to=D1}
+!whiteLongCastlingMove2 = M{player=WHITE, piece=KING, promote=EMPTY, from=D1, to=C1}
+!whiteLongCastlingMove3 = M{player=WHITE, piece=ROOK, promote=EMPTY, from=A1, to=D1}
+whiteLongCastling  =  applyMove whiteLongCastlingMove3
+                    . applyMove whiteLongCastlingMove2
+                    . applyMove whiteLongCastlingMove1
+!blackShortCastlingMove1 = M{player=BLACK, piece=KING, promote=EMPTY, from=E8, to=F8}
+!blackShortCastlingMove2 = M{player=BLACK, piece=KING, promote=EMPTY, from=F8, to=G8}
+!blackShortCastlingMove3 = M{player=BLACK, piece=ROOK, promote=EMPTY, from=H8, to=F8}
+blackShortCastling =  applyMove blackShortCastlingMove3
+                    . applyMove blackShortCastlingMove2
+                    . applyMove blackShortCastlingMove1
+
+!blackLongCastlingMove1 = M{player=BLACK, piece=KING, promote=EMPTY, from=E8, to=D8}
+!blackLongCastlingMove2 = M{player=BLACK, piece=KING, promote=EMPTY, from=D8, to=C8}
+!blackLongCastlingMove3 = M{player=BLACK, piece=ROOK, promote=EMPTY, from=A8, to=D8}
+blackLongCastling  =  applyMove blackLongCastlingMove3
+                    . applyMove blackLongCastlingMove2
+                    . applyMove blackLongCastlingMove1
 
 --- apply a 'Move' to a 'Position'
 applyMove ∷ Move → Position → Position
@@ -568,7 +593,9 @@ applyMove m p
                         then (p.rookSet `diff` fromMask) `union` toMask
                         else p.rookSet `diff`  fromMask
         castling ∷ Move → Position → Position
-        castling m p = undefined
+        castling m p = if m.player == WHITE
+                        then if m.promote == KING then whiteShortCastling p else whiteLongCastling p
+                        else if m.promote == KING then blackShortCastling p else blackLongCastling p 
 
 --- The set of fields a 'WHITE' 'PAWN' on some 'Index' can go potentially
 pure native whitePawnTargets    frech.MDB.whitePawnTargets ∷ Index → Fields
