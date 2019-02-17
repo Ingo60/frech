@@ -241,8 +241,14 @@ instance Show Piece where
 --- If it's 'EMPTY', the 'FigInfo.player' is meaningless. 
 data FigInfo = FI {!player :: Player, !piece :: Piece, !wo :: Fields }
 
-
---- representation of a move
+{--
+    Representation of a move
+    
+    Normally, field 'Move.promote' is 'EMPTY'.
+    If piece is 'KING', promote may be 'QUEEN' or 'KING' to indicate queenside or kingside castling.
+    If it's a promoting 'PAWN' move, promote may be 'KNIGHT', 'BISHOP', 'ROOK' or 'QUEEN'.
+    If it's an en passant capturing, promote will be 'PAWN'.
+--}
 data Move = M {!player ∷ Player, !piece, !promote ∷ Piece, !from, !to ∷ Index } where
     (==), (!=) ∷ Move → Move → Bool
     m1 == m2 = m1.player Player.== m2.player 
@@ -259,48 +265,95 @@ data Move = M {!player ∷ Player, !piece, !promote ∷ Piece, !from, !to ∷ In
 instance Eq Move
 deriving Show Move
 
+--- List of possible 'Moves' in a given 'Position'. 
+--- The moves may still turn out illegal due to check.
 moves ∷ Position → [Move]
 moves p = foldFields (genMove p) [] p.activeFigures
 
-genMove p m ms = foldIndexes (addMove p pc) ms validTargets
+genMove p m ms = castlingMoves p ++ foldIndexes (addMove p pc) ms validTargets
     where
         !pc      = whatIs p m
-        !index   = bitIndex pc.wo
-        !targets = case pc.piece of 
-            PAWN   → if pc.player == WHITE then whitePawnTargets index else blackPawnTargets index
-            KNIGHT → knightTargets  index
-            BISHOP → bishopTargets  index
-            ROOK   → rookTargets    index
-            QUEEN  → bishopTargets  index `union` rookTargets index
-            KING   → kingTargets    index
-            EMPTY  → empty
-        !validTargets = targets `diff` p.activeFigures
+        !validTargets = pieceTargets pc `diff` p.activeFigures
 
+castlingMoves ∷ Position → [Move] 
+castlingMoves p = case p.turn of
+        WHITE → if shortWhite 
+            then if longWhite then [castlingShortWhite, castlingLongWhite] else [castlingShortWhite] 
+            else if longWhite then [castlingLongWhite] else []
+        BLACK → if shortBlack
+            then if longBlack then [castlingShortBlack, castlingLongBlack] else [castlingShortBlack]
+            else if longBlack then [castlingLongBlack] else []
+    where
+        !shortWhite = 
+            G1 `member` p.flags                                  -- short castling permitted 
+            && p.empty F1 && p.empty G1                          -- fields between king and rook are empty 
+            && not (isAttacked p E1 BLACK)                       -- king not in check
+            && not (isAttacked p F1 BLACK || isAttacked p G1 BLACK) -- king does not go through/into check
+        !longWhite = 
+            C1 `member` p.flags                                  -- long castling permitted 
+            && p.empty D1 && p.empty C1 && p.empty B1            -- fields between king and rook are empty 
+            && not (isAttacked p E1 BLACK)                       -- king not in check
+            && not (isAttacked p D1 BLACK || isAttacked p C1 BLACK) -- king does not go through/into check
+        !shortBlack = 
+            G8 `member` p.flags                                  -- short castling permitted 
+            && p.empty F8 && p.empty G8                          -- fields between king and rook are empty 
+            && not (isAttacked p E8 WHITE)                       -- king not in check
+            && not (isAttacked p F8 WHITE || isAttacked p G8 WHITE) -- king does not go through/into check
+        !longBlack = 
+            C8 `member` p.flags                                  -- long castling permitted 
+            && p.empty D8 && p.empty C8 && p.empty B8            -- fields between king and rook are empty 
+            && not (isAttacked p E8 WHITE)                       -- king not in check
+            && not (isAttacked p D8 WHITE || isAttacked p C8 WHITE) -- king does not go through/into check
+
+
+!castlingShortWhite = M{player=WHITE, piece=KING, promote=KING,  from=E1, to=G1} 
+!castlingLongWhite  = M{player=WHITE, piece=KING, promote=QUEEN, from=E1, to=C1}
+!castlingShortBlack = M{player=BLACK, piece=KING, promote=KING,  from=E8, to=G8} 
+!castlingLongBlack  = M{player=BLACK, piece=KING, promote=QUEEN, from=E8, to=C8}
+
+pieceTargets ∷ FigInfo → Fields
+pieceTargets pc = case pc.piece of 
+        PAWN   → if pc.player == WHITE then whitePawnTargets index else blackPawnTargets index
+        KNIGHT → knightTargets  index
+        BISHOP → bishopTargets  index
+        ROOK   → rookTargets    index
+        QUEEN  → bishopTargets  index `union` rookTargets index
+        KING   → kingTargets    index
+        EMPTY  → empty
+    where
+        !index   = bitIndex pc.wo
+    
+ 
 
 addMove ∷ Position → FigInfo → Index → [Move] → [Move]
-addMove p pc to ms = case pc.piece of
+addMove !p pc !to ms = case pc.piece of
         PAWN  → let 
-                    !es = if pc.player == WHITE then canWhitePawn from to else canBlackPawn from to
-                    !valid = if null es 
+                    es = if pc.player == WHITE then canWhitePawn from to else canBlackPawn from to
+                    valid = if null es -- it's a capturing PAWN move
                         then    to `member` p.playerFigures pc.player.opponent 
                              || to `member` (p.flags `inter` Position.enPassantBits) 
                         else p.allEmpty es
-                    !promotion = if pc.player == WHITE then to.rank == 8 else to.rank == 1
+                    promotion = if pc.player == WHITE then to.rank == 8 else to.rank == 1
                 in
                     if valid 
                         then if promotion 
-                            then fold (\ms x -> move x !: ms) ms [QUEEN, ROOK, KNIGHT, BISHOP]
-                            else move EMPTY !: ms
+                            then fold (\ms x -> move.{promote = x} !: ms) ms promotions
+                            else if null es && p.empty to -- en passant capturing 
+                                then move.{promote = PAWN} !: ms
+                                else move !: ms
                         else ms
-        BISHOP → if p.allEmpty (canBishop from to)  then move EMPTY !: ms else ms
-        ROOK   → if p.allEmpty (canRook from to)    then move EMPTY !: ms else ms
+        BISHOP → if p.allEmpty (canBishop from to)  then move !: ms else ms
+        ROOK   → if p.allEmpty (canRook from to)    then move !: ms else ms
         QUEEN  → if p.allEmpty (canBishop from to) || p.allEmpty (canRook from to)   
-                                                    then move EMPTY !: ms else ms
-        other → move EMPTY !: ms
+                                                    then move !: ms else ms
+        other → move !: ms
         
     where
-        move !x = M {player = pc.player, piece = pc.piece, promote = x, from, to}
-        !from = bitIndex pc.wo   
+        !move = M {player = pc.player, piece = pc.piece, promote = EMPTY, from, to}
+        !from = bitIndex pc.wo
+
+--- 'Piece's a 'PAWN' can be promoted into
+!promotions = [QUEEN, ROOK, KNIGHT, BISHOP]
 -- ♔♕♖♗♘♙♚♛♜♝♞♟
 
 attacked, attackedByPawns, attackedByBishops, attackedByRooks,
@@ -396,14 +449,6 @@ decodeFigure !pawn !bish !rook =
             then if rook then QUEEN else BISHOP
             else if rook then ROOK  else EMPTY
 
---- alternative to 'decodeFigure'
-decodeF true  false false = PAWN
-decodeF true  true  false = KNIGHT
-decodeF false true  false = BISHOP
-decodeF false false true  = ROOK
-decodeF false true  true  = QUEEN
-decodeF true  false true  = KING
-decodeF _     _     _     = EMPTY
 
 --- tells what is on the field that is indicated by the (singleton) 'Fields' set.
 whatIs ∷ Position → Fields → FigInfo
@@ -441,6 +486,76 @@ place !player !piece !mask !p = P{flags, whites, pawnSet, bishopSet, rookSet}
 
 placeFigure :: FigInfo → Position → Position
 placeFigure fi p = place fi.player fi.piece fi.wo p
+
+whiteToMove ∷ Fields
+
+-- several useful bit masks     
+               
+!whiteToMove = singleton A1
+!blackToMove = empty :: Fields
+-- !clearOnShortWhiteCastling = BitSet.fromList [E1, F1, G1, H1]
+-- !clearOnLongWhiteCastling  = BitSet.fromList [E1, D1, C1, B1, A1]
+-- !clearOnShortBlackCastling = BitSet.fromList [E8, F8, G8, H8]
+-- !clearOnLongBlackCastling  = BitSet.fromList [E8, D8, C8, B8, A8]
+!whiteCastlingRights = BitSet.fromList [C1, G1]
+!blackCastlingRights = BitSet.fromList [C8, G8]
+-- !rookFields = BitSet.fromList [A8, H8, A1, H1]
+
+--- apply a 'Move' to a 'Position'
+applyMove ∷ Move → Position → Position
+applyMove m p 
+    | m.piece == KING && m.promote != EMPTY = castling m p
+    | otherwise = ordinary m p
+    where
+        ordinary ∷ Move → Position → Position
+        ordinary m p = P{flags, whites, pawnSet, bishopSet, rookSet} where
+            flags = tomove `union` castlingRights `union` enPassantBits
+            -- alternate player to move
+            tomove = if p.turn == WHITE then blackToMove else whiteToMove
+            -- if the moving piece is the KING, all castling bits of the moving player are reset
+            -- if the move is to A8, H8, A1 or H1 or from A8, H8, A1 or H1 with a ROOK  
+            --   the corresponding castling right to C8, G8, Ć1 or G1 gets lost
+            --   because this implies that the corresponding ROOK has been moved or captured.
+            -- Note 1: In 1. a4 a5 2. b4 b5 3. axb5 axb4 4. Ra8 both long castling rights get lost!
+            -- Note 2: Theoretically it is possible, that a KING captures an unmoved ROOK thus we must
+            -- check both KING moves and moves to or from edges!
+            castlingRights = (p.flags `inter` Position.castlingBits) 
+                            `diff` kingMoveLostCastlingRights
+                            `diff` rookMoveLostCastlingRights 
+                            `diff` rookCaptureLostCastlingRights
+
+            kingMoveLostCastlingRights = if m.piece == KING
+                                            then if m.player == WHITE
+                                                then  whiteCastlingRights
+                                                else  blackCastlingRights
+                                            else empty 
+            rookMoveLostCastlingRights = if m.from == A8 then singleton C8
+                                            else if m.from == H8 then singleton G8
+                                            else if m.from == A1 then singleton C1
+                                            else if m.from == H1 then singleton G1
+                                            else empty
+            rookCaptureLostCastlingRights = if m.to == A8 then singleton C8
+                                            else if m.to == H8 then singleton G8
+                                            else if m.to == A1 then singleton C1
+                                            else if m.to == H1 then singleton G1
+                                            else empty
+            enPassantBits = if m.piece == PAWN
+                then if m.player == WHITE
+                    then if ord m.to == ord m.from + 16
+                        then singleton (from (ord m.from + 8))
+                        else empty
+                    else if ord m.to == ord m.from - 16 
+                        then singleton (from (ord m.from - 8))
+                        else empty
+                else empty
+            fromMask = singleton m.from
+            toMask   = singleton m.to 
+            whites = empty
+            pawnSet = empty
+            bishopSet = empty
+            rookSet = empty 
+        castling ∷ Move → Position → Position
+        castling m p = undefined
 
 --- The set of fields a 'WHITE' 'PAWN' on some 'Index' can go potentially
 pure native whitePawnTargets    frech.MDB.whitePawnTargets ∷ Index → Fields
@@ -522,25 +637,25 @@ filterFields !f !s = go f s empty
 
 validBishopTargets, validRookTargets ∷ Position → Index → Fields → Fields
 --- Computes where a 'BISHOP' on a given 'Index' actually can go in the 'Position', but restricted to certain fields.
-validBishopTargets p from mask = go p (mask `inter` bishopTargets from) empty 
+validBishopTargets p from mask = go p from (mask `inter` bishopTargets from) empty 
     where
-        go ∷ Position → Fields → Fields → Fields
-        go !p !s !r
+        go ∷ Position → Index → Fields → Fields → Fields
+        go !p !from !s !r
             | null s = r
-            | p.allEmpty (canBishop from to)    = go p (s `diff` m) (r `union` m)
-            | otherwise                         = go p (s `diff` m)  r
+            | p.allEmpty (canBishop from to)    = go p from (s `diff` m) (r `union` m)
+            | otherwise                         = go p from (s `diff` m)  r
             where
                 !to = bitIndex s 
                 !m  = singleton to    
 
 --- Computes where a 'ROOK' on a given 'Index' actually can go in the 'Position', but restricted to certain fields.
-validRookTargets p from mask = go p (mask `inter` rookTargets from) empty 
+validRookTargets p from mask = go p from (mask `inter` rookTargets from) empty 
     where
-        go ∷ Position → Fields → Fields → Fields
-        go !p !s !r
+        go ∷ Position → Index → Fields → Fields → Fields
+        go !p !from !s !r
             | null s = r
-            | p.allEmpty (canRook from to)  = go p (s `diff` m) (r `union` m)
-            | otherwise                     = go p (s `diff` m)  r
+            | p.allEmpty (canRook from to)  = go p from (s `diff` m) (r `union` m)
+            | otherwise                     = go p from (s `diff` m)  r
             where
                 !to = bitIndex s 
                 !m  = singleton to    
