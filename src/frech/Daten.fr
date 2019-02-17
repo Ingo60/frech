@@ -512,7 +512,7 @@ applyMove m p
             flags = tomove `union` castlingRights `union` enPassantBits
             -- alternate player to move
             tomove = if p.turn == WHITE then blackToMove else whiteToMove
-            -- if the moving piece is the KING, all castling bits of the moving player are reset
+            -- if the moving piece is the KING, the castling rights of the moving player are nullified.
             -- if the move is to A8, H8, A1 or H1 or from A8, H8, A1 or H1 with a ROOK  
             --   the corresponding castling right to C8, G8, Ć1 or G1 gets lost
             --   because this implies that the corresponding ROOK has been moved or captured.
@@ -548,12 +548,25 @@ applyMove m p
                         then singleton (from (ord m.from - 8))
                         else empty
                 else empty
-            fromMask = singleton m.from
-            toMask   = singleton m.to 
-            whites = empty
-            pawnSet = empty
-            bishopSet = empty
-            rookSet = empty 
+            -- fields that will be empty after the move
+            !fromMask = if m.promote == PAWN -- en passant capture
+                        then if m.player == WHITE 
+                            then singleton m.from `union` singleton (from (ord m.to - 8))
+                            else singleton m.from `union` singleton (from (ord m.to + 8))
+                        else singleton m.from
+            -- field that will be set after the move
+            !toMask = singleton m.to 
+            whites = if m.player == WHITE then (p.whites `diff` fromMask) `union` toMask 
+                        else  p.whites `diff` (fromMask `union` toMask) 
+            pawnSet = if m.piece == PAWN || m.piece == KING || m.piece == KNIGHT
+                        then (p.pawnSet `diff` fromMask) `union` toMask
+                        else (p.pawnSet `diff` fromMask)
+            bishopSet = if m.piece == BISHOP || m.piece == QUEEN || m.piece == KNIGHT
+                        then (p.bishopSet `diff` fromMask) `union` toMask
+                        else p.bishopSet `diff`  fromMask
+            rookSet = if m.piece == ROOK  || m.piece == QUEEN || m.piece == KING
+                        then (p.rookSet `diff` fromMask) `union` toMask
+                        else p.rookSet `diff`  fromMask
         castling ∷ Move → Position → Position
         castling m p = undefined
 
