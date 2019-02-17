@@ -368,15 +368,18 @@ attacked, attackedByPawns, attackedByBishops, attackedByRooks,
     Note that computation for 'QUEEN', 'ROOK' and 'BISHOP' attackers require two loops.
     Therefore, whenever one just needs to know *if* the 'Index' is attacked or not, use 'isAttacked'
 --} 
-attacked p wo durch = if durch == WHITE then attackers `inter` p.whites else attackers `diff` p.whites
-    where
-        attackers = attackedByPawns p wo durch
-                    `union` attackedByKnights p wo durch `union` attackedByKings p wo durch
-                    `union` attackedByBishopsOrQueens p wo durch `union` attackedByRooksOrQueens p wo durch  
+attacked p wo durch = attackedByPawns p wo durch
+                    `union` attackedByKnights p wo durch 
+                    `union` attackedByKings p wo durch
+                    `union` attackedByBishopsOrQueens p wo durch 
+                    `union` attackedByRooksOrQueens p wo durch  
 
 --- See 'attacked', but reports attacks by 'PAWN's only. O(1)
-attackedByPawns p wo durch = p.pawns `inter` attackers where
-    !attackers = if durch == BLACK then attackingBlackPawns wo else attackingWhitePawns wo
+attackedByPawns p wo durch = if durch == WHITE 
+                                then (p.pawns `inter` attackers) `inter` p.whites
+                                else (p.pawns `inter` attackers) `diff`  p.whites 
+    where
+        !attackers = if durch == BLACK then attackingBlackPawns wo else attackingWhitePawns wo
 
 --- See 'attacked', but reports attacks by 'KNIGHT's only. O(1)
 attackedByKnights p wo durch = if durch == WHITE    then attackers `inter` p.whites 
