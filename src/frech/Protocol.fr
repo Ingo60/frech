@@ -1,0 +1,37 @@
+module frech.Protocol where
+
+import frech.Daten
+import frech.FEN(decodeFEN)
+
+data GameState = GS {!history ∷ [Position], !force::Bool}
+
+protocol gs = do
+    command ← getLine
+    case command of
+        '^\s*(accepted|rejected|xboard|random)\b'    
+                            → protocol gs
+        '^\s*protover '     → do
+            println ("feature ping=1 setboard=1 playother=1 usermove=1 draw=0 "
+                        ++ "sigint=0 analyze=0 variants=\"normal\" colors=0 nps=0 "
+                        ++ "debug=1 memory=0 smp=0 "
+                        ++ "done=1")
+            stdout.flush
+            protocol gs
+        '^\s*new\b'         → protocol GS{history=[initialBoard], force=true}
+        '^\s*quit\b'        → pure ()
+        '^\s*force\b'       → protocol gs.{force=true}
+        '^\s*playother\b'   → protocol gs.{force=false}
+        '^\s*go\b'          → do
+            println "move e7e5"
+            stdout.flush
+            protocol gs.{force=false}
+        -- time control (not yet implemented)
+        '^\s(level|st|sd|nps|time|otim)\b'
+                            → protocol gs
+        _                   → do
+            println ("Error (unknown command): " ++ command)
+            stdout.flush
+            protocol gs
+        
+    
+main _ = protocol GS{history=[initialBoard], force=true}    
