@@ -1,33 +1,95 @@
 module frech.Protocol where
 
+import Control.Concurrent(MVar)
+
 import frech.Daten
-import frech.FEN(decodeFEN)
+-- import frech.FEN(decodeFEN)
 
-data GameState = GS {!history ∷ [Position], !force::Bool}
+-- when the drive receives 'NoMore' or 'EOF' there won\'t be something to read from this 'MVar'
+data Input = Line String | EOF | MV Move | NoMore
+deriving Eq Input
 
-protocol gs = do
-    -- println ("# force is " ++ show gs.force);
-    -- stdout.flush
-    command ← getLine 
+type Command = Bool
+
+
+data State = FORCED | PLAYING | THINKING
+data GameState = GS { 
+        history :: [Position], 
+        state :: State, 
+        player :: Player,
+        rvar, tvar :: MVar Command,
+        ivar       :: MVar Input,
+    } where {
+    current GS{history} = head history
+}
+
+
+reader :: MVar Command -> MVar Input -> IO ()
+reader cvar dvar = do
+    input <- fmap Line getLine `catch` (\(x::EOFException) -> pure EOF)
+    dvar.put input
+    if input == EOF then pure ()
+    else do
+        continue <- cvar.take
+        if continue then reader cvar dvar else pure ()
+
+type Strategy = GameState -> MVar Command -> MVar Input -> IO ()
+
+strategy1 ∷ Strategy
+strategy1 gs cin cout = do
+    if true  -- there is a next move
+    then do
+        m <- pure M{player=WHITE, piece=PAWN, promote=EMPTY, from=E2, to=E4}
+        -- this could have taken a while, let's see if we got something meanwhile
+        abort ← cin.poll
+        case abort of
+            Just false → pure ()   -- abort
+            Just true  → println "# protocol error, got CONTINUE before sending move" >> stdout.flush
+            Nothing    → do 
+                cout.put (MV m)
+                continue <- cin.take
+                if continue then strategy1 gs cin cout else pure ()
+    else do 
+        cout.put NoMore
+        pure ()
+
+protocol :: Strategy → GameState → IO ()
+protocol strategy gs  = do
+    case gs.state of
+        FORCED → do
+            cmd ← gs.ivar.take
+            case cmd of
+                EOF     → pure ()   -- too bad
+                MV _    → do 
+                    println "# protocol error, got a move in forced mode." >> stdout.flush
+                    gs.tvar.offer false
+                    protocol strategy gs
+                NoMore  → do
+                    println "# protocol error, got NoMore in forced mode." >> stdout.flush
+                    protocol strategy gs
+                Line command → do
+                    gs.rvar.put true
+                    process command gs >>= protocol strategy
+    pure ()
+
+
+process ∷ String → GameState → IO GameState
+process command gs = do
     case command of
         '^\s*(accepted|rejected|xboard|random|cores|hard|easy|post)\b'    
-                            → protocol gs
+                            → pure gs
         '^\s*protover '     → do
-            println ("feature ping=1 setboard=1 playother=1 usermove=1 draw=0 "
+            println ("feature ping=0 setboard=1 playother=1 usermove=1 draw=0 "
                         ++ "sigint=0 analyze=0 variants=\"normal\" colors=0 nps=0 "
                         ++ "debug=1 memory=0 smp=1 "
                         ++ "done=1")
             stdout.flush
-            protocol gs
-        '^\s*new\b'         → protocol GS{history=[initialBoard], force=false}
-        '^\s*quit\b'        → pure ()
-        '^\s*force\b'       → protocol gs.{force=true}
-        '^\s*playother\b'   → protocol gs.{force=false}
-        '^\s*ping\b'        → do
-            println (command.replaceFirst 'ping' "pong")
-            stdout.flush
-            protocol gs
-        '^\s*go\b'          → think gs.{force=false} >>= protocol
+            pure gs
+        '^\s*new\b'         → pure gs.{history=[initialBoard], state=PLAYING, player=BLACK}
+        '^\s*quit\b'        → pure gs
+        '^\s*force\b'       → pure gs.{state=FORCED}
+        '^\s*playother\b'   → pure gs.{state=PLAYING, player = gs.current.turn.opponent}
+        '^\s*go\b'          → pure gs.{state=PLAYING, player = gs.current.turn.opponent}
         -- user makes a move
         m~'^\s*usermove ([a-h][1-8])([a-h][1-8])([nbrq]?)\b' → do
             println "# in usermove"
@@ -49,7 +111,7 @@ protocol gs = do
                     println ("Illegal move: " ++ command.replaceFirst 'usermove ' "")
                     mapM_  (println . ("# " ++) . show) (moves p)
                     stdout.flush
-                    protocol gs
+                    pure gs
                 else do
                     let mv  = head ms
                         pos = applyMove p mv
@@ -58,17 +120,17 @@ protocol gs = do
                     println ("# " ++ show (whatIsOn pos mv.from))
                     println ("# " ++ show (whatIsOn pos mv.to))
                     stdout.flush 
-                    if gs'.force then protocol gs' else think gs' >>= protocol
+                    pure gs'
         -- result 
-        '^\s*result ' -> protocol gs.{force=true}                        
+        '^\s*result ' -> pure gs.{state=FORCED}                        
         -- time control (not yet implemented)
         '^\s*(level|st|sd|nps|time|otim)\b'
-                            → protocol gs
+                            → pure gs
         
-        _                   → do
+        other                   → do
             println ("Error (unknown command): " ++ command)
             stdout.flush
-            protocol gs
+            pure gs
         
 
 think ∷ GameState → IO GameState
@@ -99,8 +161,8 @@ think gs = do
         pure  gs.{history ← (pos:)}
  
             
-main _ = protocol GS{history=[initialBoard], force=true} 
-    `catch` (\(x::EOFException) -> pure ())
-    `finally` do
-        println "# exiting"
-        stdout.flush
+--main _ = protocol GS{history=[initialBoard], force=true} 
+--    `catch` (\(x::EOFException) -> pure ())
+--    `finally` do
+--        println "# exiting"
+--        stdout.flush

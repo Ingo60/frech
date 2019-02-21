@@ -1,6 +1,4 @@
 
-type Input = Line String | EOF | MV Move | NoMore
-type Command = Bool
 
 reader :: MVar Command -> MVar Input -> IO ()
 reader cvar dvar = do
@@ -23,11 +21,7 @@ strategy gs cin cout = do
 		cout.put NoMore
 		pure ()
 
-data State = FORCE | PLAYING | THINKING
-data GameState = GS { history :: [Position], state :: State, player :: Player,
-					rdrcmd, thinkcmd :: MVar Command,
-					input            :: MVar Input,
-					}
+
 
 driver gs = ...
 performMove :: GameState -> Bool -> Move -> IO GameState ???
