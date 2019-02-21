@@ -6,32 +6,101 @@ import frech.FEN(decodeFEN)
 data GameState = GS {!history ∷ [Position], !force::Bool}
 
 protocol gs = do
-    command ← getLine
+    -- println ("# force is " ++ show gs.force);
+    -- stdout.flush
+    command ← getLine 
     case command of
-        '^\s*(accepted|rejected|xboard|random)\b'    
+        '^\s*(accepted|rejected|xboard|random|cores|hard|easy|post)\b'    
                             → protocol gs
         '^\s*protover '     → do
             println ("feature ping=1 setboard=1 playother=1 usermove=1 draw=0 "
                         ++ "sigint=0 analyze=0 variants=\"normal\" colors=0 nps=0 "
-                        ++ "debug=1 memory=0 smp=0 "
+                        ++ "debug=1 memory=0 smp=1 "
                         ++ "done=1")
             stdout.flush
             protocol gs
-        '^\s*new\b'         → protocol GS{history=[initialBoard], force=true}
+        '^\s*new\b'         → protocol GS{history=[initialBoard], force=false}
         '^\s*quit\b'        → pure ()
         '^\s*force\b'       → protocol gs.{force=true}
         '^\s*playother\b'   → protocol gs.{force=false}
-        '^\s*go\b'          → do
-            println "move e7e5"
+        '^\s*ping\b'        → do
+            println (command.replaceFirst 'ping' "pong")
             stdout.flush
-            protocol gs.{force=false}
+            protocol gs
+        '^\s*go\b'          → think gs.{force=false} >>= protocol
+        -- user makes a move
+        m~'^\s*usermove ([a-h][1-8])([a-h][1-8])([nbrq]?)\b' → do
+            println "# in usermove"
+            stdout.flush
+            let p    = head gs.history
+                from = m.group 1
+                to   = m.group 2
+                prom = m.group 3
+                ms = case (from >>= Index.read, to >>= Index.read, fmap _.toUpperCase prom) of
+                    (Just fr, Just t, Just nbrq) 
+                        -> filter (\(m::Move) -> m.from == fr 
+                                && m.to == t 
+                                && (m.promote < KNIGHT && nbrq == "" 
+                                    || show m.promote == nbrq
+                                    || m.piece == KING)) (moves p)
+                    _ -> []
+            if null ms
+                then do
+                    println ("Illegal move: " ++ command.replaceFirst 'usermove ' "")
+                    mapM_  (println . ("# " ++) . show) (moves p)
+                    stdout.flush
+                    protocol gs
+                else do
+                    let mv  = head ms
+                        pos = applyMove p mv
+                        gs' = gs.{history ← (pos:)}
+                    println ("# after " ++ show mv)
+                    println ("# " ++ show (whatIsOn pos mv.from))
+                    println ("# " ++ show (whatIsOn pos mv.to))
+                    stdout.flush 
+                    if gs'.force then protocol gs' else think gs' >>= protocol
+        -- result 
+        '^\s*result ' -> protocol gs.{force=true}                        
         -- time control (not yet implemented)
-        '^\s(level|st|sd|nps|time|otim)\b'
+        '^\s*(level|st|sd|nps|time|otim)\b'
                             → protocol gs
+        
         _                   → do
             println ("Error (unknown command): " ++ command)
             stdout.flush
             protocol gs
         
-    
-main _ = protocol GS{history=[initialBoard], force=true}    
+
+think ∷ GameState → IO GameState
+think gs = do
+        let m   = head (moves (head gs.history))
+            pos = applyMove (head gs.history) m
+        print "move "
+        print m.from
+        print m.to
+        when (m.promote >= KNIGHT) do
+            print (m.promote.show.toLowerCase)
+        println ""
+        println ("# after " ++ show m)
+        println ("# " ++ show (whatIsOn pos m.from))
+        println ("# " ++ show (whatIsOn pos m.to)) 
+
+        when (null (moves pos)) do
+            if (notInCheck pos)
+                then println "1/2-1/2 (Stalemate)"
+                else if pos.turn == WHITE
+                    then println "0-1 (Black mates)"
+                    else println "1-0 (White mates)"
+        when (not (null (moves pos)) && pos.getPlyCounter > 99) do
+            println "1/2-1/2 (50 moves)"
+        when (not (null (moves pos)) && pos.getPlyCounter < 100 && length (filter (==pos) gs.history) > 1) do
+            println "1/2-1/2 (repetition)"
+        stdout.flush
+        pure  gs.{history ← (pos:)}
+ 
+            
+main _ = protocol GS{history=[initialBoard], force=true} 
+    `catch` (\(x::EOFException) -> pure ())
+    `finally` do
+        println "# exiting"
+        stdout.flush

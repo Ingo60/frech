@@ -254,7 +254,7 @@ derive Ord Piece
 derive Enum Piece
 
 instance Show Piece where
-    show EMPTY  = "?"
+    show EMPTY  = "-"
     show PAWN   = "P"
     show KNIGHT = "N"
     show BISHOP = "B"
@@ -265,7 +265,7 @@ instance Show Piece where
 --- Answer to the question "What is on field xy?"
 --- If it's 'EMPTY', the 'FigInfo.player' is meaningless. 
 data FigInfo = FI {!player :: Player, !piece :: Piece, !wo :: Fields }
-
+derive Show FigInfo
 {--
     Representation of a move
     
