@@ -1,0 +1,41 @@
+
+type Input = Line String | EOF | MV Move | NoMore
+type Command = Bool
+
+reader :: MVar Command -> MVar Input -> IO ()
+reader cvar dvar = do
+	input <- fmap Line getLine `catch` (\(x::EOFException) -> pure EOF)
+	dvar.put input
+	if input == EOF then pure ()
+	else do
+		continue <- cvar.get
+		if continue then reader cvar dvar else pure ()
+
+strategy :: GameState -> MVar Command -> MVar Input -> IO ()
+strategy gs cin cout = do
+	if there is a next move
+	then do
+		m <- find a move
+		cout.put (MV m)
+		continue <- cvar get
+		if continue then strategy gs cin cout else pure ()
+	else do	
+		cout.put NoMore
+		pure ()
+
+data State = FORCE | PLAYING | THINKING
+data GameState = GS { history :: [Position], state :: State, player :: Player,
+					rdrcmd, thinkcmd :: MVar Command,
+					input            :: MVar Input,
+					}
+
+driver gs = ...
+performMove :: GameState -> Bool -> Move -> IO GameState ???
+					
+main = do
+	m1 <- newEmptyMVar
+	m2 <- newEmptyMVar
+	m3 <- newEmptyMVar
+	fork (reader m1 m2)
+	driver GS{history=[initialBoard], rdrcmd=m1, thinkcmd=m2, input=m3, state=FORCE, player=BLACK}
+	
