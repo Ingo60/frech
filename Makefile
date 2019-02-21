@@ -17,7 +17,7 @@ frech.slim.jar: frech.jar
 	$(JAVA) -cp $(PROGUARD):$(SHRINK) de.contexo.Shrink frech.jar
 
 frech.jar: $(MAINCLASS)
-	cp $(FREGEC) frech.jar
+	cp /home/ingo/Frege/frege/fregec.jar frech.jar
 	jar -uvf frech.jar -C bin frech
 	jar -uvfe frech.jar $(ENTRY)
 
