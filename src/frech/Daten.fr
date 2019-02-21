@@ -155,6 +155,15 @@ data Position = P {
     --}
     !pawnSet, !bishopSet, !rookSet :: Fields,
   } where
+    --- Equality of bitmasks up to ply counter
+    (==) :: Position → Position → Bool
+    p1 == p2 = p1.flags `diff` plyCounterBits BitSet.== p2.flags `diff` plyCounterBits
+            && p1.whites    BitSet.== p2.whites
+            && p1.pawnSet   BitSet.== p2.pawnSet
+            && p1.bishopSet BitSet.== p2.bishopSet
+            && p1.rookSet   BitSet.== p2.rookSet
+    --- 0 for now
+    hashCode p = BitSet.hashCode (p.flags `diff`  plyCounterBits)
     
     --- Tell the fields occupied by 'PAWN's
     --- 'PAWN's have a bit in 'Position.pawnSet' only.
@@ -191,7 +200,22 @@ data Position = P {
         where
             enPassantBlackPawn = [A6 .. H6]
             enPassantWhitePawn = [A3 .. H3]
+    
+    --- Constant bitmask for selection of the ply counter
+    --- This can be used to implement the 50 moves rule
+    !plyCounterBits = BitSet.fromList [A4 .. H5]
+    
+    --- get the number of 'Move's applied since tha last pawn move or capture
+    --- (Castling, despite technically doing 3 moves, corrects the counter acordngly)
+    getPlyCounter p = (flags p `inter` plyCounterBits).set `shiftR` 24
+    
+    --- set the ply counter 
+    setPlyCounter p n =  p.{flags =       (flags p `diff` plyCounterBits) 
+                                `union` (BitSet (n `shiftL` 24) `inter` plyCounterBits)}
 
+    --- subtract 2 from the plyCounter (conveniece for castlings)
+    correctPlyCounterForCastling p = setPlyCounter p (getPlyCounter p - 2)
+    
     --- tell if an index is empty 
     empty p index = not (index `member` figures p)
     
@@ -216,6 +240,7 @@ data Position = P {
     --- figures of the player whose turn it is
     activeFigures p = playerFigures p (turn p)
 
+instance Eq Position
     
 deriving Show Position
 
@@ -267,8 +292,12 @@ deriving Show Move
 
 --- List of possible 'Moves' in a given 'Position'. 
 --- The moves may still turn out illegal due to check.
-moves ∷ Position → [Move]
-moves p = foldFields (genMove p) [] p.activeFigures
+rawMoves   ∷ Position → [Move]
+rawMoves p = foldFields (genMove p) [] p.activeFigures
+
+--- List of possibe 'Moves' in a given 'Position'
+--- Verfied to not leave the 'KING' of the player who moves in check.
+moves p = filter (notInCheck . applyMove p)  (rawMoves p)
 
 genMove p m ms = castlingMoves p ++ foldIndexes (addMove p pc) ms validTargets
     where
@@ -425,6 +454,15 @@ isAttacked p wo durch =    not (null (attackedByPawns           p wo durch))
                         || not (null (attackedByBishopsOrQueens p wo durch)) 
                         || not (null (attackedByRooksOrQueens   p wo durch)) 
 
+--- Negation of 'isAttacked', but factors out the 'not's and is thus a bit more efficient
+isNotAttacked ∷ Position → Index → Player → Bool
+isNotAttacked p wo durch = null (attackedByPawns           p wo durch)
+                        && null (attackedByKnights         p wo durch) 
+                        && null (attackedByKings           p wo durch) 
+                        && null (attackedByBishopsOrQueens p wo durch) 
+                        && null (attackedByRooksOrQueens   p wo durch) 
+
+
 --- checks if the 'KING' of some 'Player' stands in check
 inCheck ∷ Position → Player → Bool
 inCheck p player = isAttacked p king player.opponent
@@ -432,6 +470,13 @@ inCheck p player = isAttacked p king player.opponent
         !kings = if player == WHITE then p.kings `inter` p.whites else p.kings `diff` p.whites
         !king  = bitIndex kings
 
+--- checks if the 'Position' after a move is valid insofar as the 'KING' of the 'Player' who just moved is not in check
+notInCheck p = isNotAttacked p king player
+    where
+        player = p.turn
+        king   = bitIndex kings
+        kings  = if player == WHITE then p.kings `diff` p.whites else p.kings `inter` p.whites
+ 
 showUTF ∷ FigInfo → String
 showUTF fi = case fi.piece of 
     PAWN    → if fi.player == WHITE then "♙" else "♟"
@@ -505,39 +550,49 @@ whiteToMove ∷ Fields
 !whiteShortCastlingMove1 = M{player=WHITE, piece=KING, promote=EMPTY, from=E1, to=F1}
 !whiteShortCastlingMove2 = M{player=WHITE, piece=KING, promote=EMPTY, from=F1, to=G1}
 !whiteShortCastlingMove3 = M{player=WHITE, piece=ROOK, promote=EMPTY, from=H1, to=F1}
-whiteShortCastling =  applyMove whiteShortCastlingMove3
-                    . applyMove whiteShortCastlingMove2
-                    . applyMove whiteShortCastlingMove1
+whiteShortCastling p =  applyMove 
+                            (applyMove 
+                                (applyMove p whiteShortCastlingMove1) 
+                                whiteShortCastlingMove2)
+                            whiteShortCastlingMove3
 
 !whiteLongCastlingMove1 = M{player=WHITE, piece=KING, promote=EMPTY, from=E1, to=D1}
 !whiteLongCastlingMove2 = M{player=WHITE, piece=KING, promote=EMPTY, from=D1, to=C1}
 !whiteLongCastlingMove3 = M{player=WHITE, piece=ROOK, promote=EMPTY, from=A1, to=D1}
-whiteLongCastling  =  applyMove whiteLongCastlingMove3
-                    . applyMove whiteLongCastlingMove2
-                    . applyMove whiteLongCastlingMove1
+whiteLongCastling  p =  applyMove 
+                            (applyMove 
+                                (applyMove p whiteLongCastlingMove1) 
+                                whiteLongCastlingMove2)
+                            whiteLongCastlingMove3
 !blackShortCastlingMove1 = M{player=BLACK, piece=KING, promote=EMPTY, from=E8, to=F8}
 !blackShortCastlingMove2 = M{player=BLACK, piece=KING, promote=EMPTY, from=F8, to=G8}
 !blackShortCastlingMove3 = M{player=BLACK, piece=ROOK, promote=EMPTY, from=H8, to=F8}
-blackShortCastling =  applyMove blackShortCastlingMove3
-                    . applyMove blackShortCastlingMove2
-                    . applyMove blackShortCastlingMove1
+blackShortCastling p =  applyMove 
+                            (applyMove 
+                                (applyMove p blackShortCastlingMove1) 
+                                blackShortCastlingMove2)
+                            blackShortCastlingMove3
 
 !blackLongCastlingMove1 = M{player=BLACK, piece=KING, promote=EMPTY, from=E8, to=D8}
 !blackLongCastlingMove2 = M{player=BLACK, piece=KING, promote=EMPTY, from=D8, to=C8}
 !blackLongCastlingMove3 = M{player=BLACK, piece=ROOK, promote=EMPTY, from=A8, to=D8}
-blackLongCastling  =  applyMove blackLongCastlingMove3
-                    . applyMove blackLongCastlingMove2
-                    . applyMove blackLongCastlingMove1
+blackLongCastling p = applyMove 
+                            (applyMove 
+                                (applyMove p blackLongCastlingMove1) 
+                                blackLongCastlingMove2)
+                            blackLongCastlingMove3
+
+
 
 --- apply a 'Move' to a 'Position'
-applyMove ∷ Move → Position → Position
-applyMove m p 
-    | m.piece == KING && m.promote != EMPTY = castling m p
+applyMove ∷ Position → Move → Position
+applyMove !p !m 
+    | m.piece == KING && m.promote != EMPTY = (castling m p).correctPlyCounterForCastling
     | otherwise = ordinary m p
     where
         ordinary ∷ Move → Position → Position
         ordinary m p = P{flags, whites, pawnSet, bishopSet, rookSet} where
-            flags = tomove `union` castlingRights `union` enPassantBits
+            flags = tomove `union` castlingRights `union` enPassantBits `union` plies
             -- alternate player to move
             tomove = if p.turn == WHITE then blackToMove else whiteToMove
             -- if the moving piece is the KING, the castling rights of the moving player are nullified.
@@ -576,6 +631,10 @@ applyMove m p
                         then singleton (from (ord m.from - 8))
                         else empty
                 else empty
+            -- increment number of plies, unless it's a capture or PAWN move
+            plies = if m.piece == PAWN || not (p.empty m.to)
+                    then empty
+                    else BitSet ((p.getPlyCounter + 1) `shiftL` 24) `inter` Position.plyCounterBits
             -- fields that will be empty after the move
             !fromMask = if m.promote == PAWN -- en passant capture
                         then if m.player == WHITE 
