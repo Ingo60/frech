@@ -647,13 +647,13 @@ applyMove !p !m
                         else  p.whites `diff` (fromMask `union` toMask) 
             pawnSet = if m.piece == PAWN || m.piece == KING || m.piece == KNIGHT
                         then (p.pawnSet `diff` fromMask) `union` toMask
-                        else (p.pawnSet `diff` fromMask)
+                        else p.pawnSet `diff` (fromMask  `union` toMask)
             bishopSet = if m.piece == BISHOP || m.piece == QUEEN || m.piece == KNIGHT
                         then (p.bishopSet `diff` fromMask) `union` toMask
-                        else p.bishopSet `diff`  fromMask
+                        else p.bishopSet `diff`  (fromMask  `union` toMask)
             rookSet = if m.piece == ROOK  || m.piece == QUEEN || m.piece == KING
                         then (p.rookSet `diff` fromMask) `union` toMask
-                        else p.rookSet `diff`  fromMask
+                        else p.rookSet `diff`  (fromMask  `union` toMask)
         castling ∷ Move → Position → Position
         castling m p = if m.player == WHITE
                         then if m.promote == KING then whiteShortCastling p else whiteLongCastling p
