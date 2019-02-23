@@ -1,24 +1,70 @@
+--- Protocol handler for communication with xboard.
 module frech.Protocol where
 
-import Control.Concurrent(MVar)
+import Control.Concurrent(MVar, forkIO, forkOS)
 
 import frech.Daten
 -- import frech.FEN(decodeFEN)
 
--- when the drive receives 'NoMore' or 'EOF' there won\'t be something to read from this 'MVar'
-data Input = Line String | EOF | MV Move | NoMore
+--- when the driver receives 'NoMore' or 'EOF' there won\'t be something to read from this 'MVar'thereafter
+data Input = 
+        Line String     --- Sent by input reader when it has read a line of input.
+        | EOF           --- Sent by the input reader when there is no more input. 
+        | MV Int Move   --- Sent by strategy identified by some number when it has found a 'Move'
+        | NoMore Int    --- Sent by strategy identified by some number when it can't find more 'Move's.
 deriving Eq Input
+deriving Show Input
 
 type Command = Bool
+type Clock   = Long
 
 
-data State = FORCED | PLAYING | THINKING
+data State = FORCED | PLAYING | THINKING Clock | TERMINATED
+derive Show State
+
 data GameState = GS { 
-        history :: [Position], 
-        state :: State, 
-        player :: Player,
-        rvar, tvar :: MVar Command,
-        ivar       :: MVar Input,
+        history :: [Position]       {-- 'Position's reached since last "new" or "setboard" xboard-command.
+                                        The head of this non-empty list is the current position.
+                                        The last entry is 'initialBoard' in case of "new" or the 
+                                        'Position' received through "setboard".
+                                        
+                                         This list is shortened only on xboard "undo" commands.
+                                         The implementation will refuse to undo the initial 'Position'. -} 
+        state :: State              {-- 
+                                        Are we in force mode, playing or thinking?
+                                        In 'THINKING' a strategy task will be active. -}      
+        player :: Player            --- The colour we are playing.
+        rvar, tvar :: MVar Command  {-- 
+                                        Commands are sent to the reader or strategy task through this 
+                                        'MVar's. Normally every input must be answered immediately
+                                        with either *true* for "continue" or *false* for "terminate" except for
+                                        the 'EOF' and 'NoMore' messages. The input reader or strategy will
+                                        terminate once they send this and not read any answer.
+                                        
+                                        The driver shall not send any more commands once it has sent "false" 
+                                        (though this should not do big harm).
+                                        
+                                        A strategy must be careful not to send anything over the input
+                                        channel when it has received "false". The driver may send "false"
+                                        (but not "true")
+                                        even before the strategy sends a move to signal that it isn't 
+                                        interested anymore in 'Move's for the 'Position' the strategy 
+                                        is working on.
+                                        This can happen when the driver already sent the previous best move
+                                        because the time was running out, or in answer to the "?"
+                                        xboard command, or when xboard switched to "force" mode during
+                                        thinking.   
+                                    --}  
+        ivar       :: MVar Input    --- 'Input' from the 'reader' and strategies.
+        sid        :: Int           {-- 
+                                        Strategy identifier. Used to sort out unwanted input from
+                                        strategies lagging behind. Incremented on each half-move, so that
+                                        only input with an id that matches this 'GameState's sid
+                                        is regarded as valid.
+                                    -}
+        pings      :: [Int]         --- Ping numbers received during thinking are saved here.
+        best       :: Maybe Move    --- The best move found so far
+        timePerMove :: Clock        --- time per move in milliseconds 
     } where {
     current GS{history} = head history
 }
@@ -26,55 +72,155 @@ data GameState = GS {
 
 reader :: MVar Command -> MVar Input -> IO ()
 reader cvar dvar = do
+    -- println ("# reader waiting for input")
+    -- stdout.flush
     input <- fmap Line getLine `catch` (\(x::EOFException) -> pure EOF)
+    -- println ("# reader sending " ++ show input)
+    -- stdout.flush 
     dvar.put input
     if input == EOF then pure ()
     else do
         continue <- cvar.take
+        -- println ("# reader got answer " ++ show continue)
+        -- stdout.flush
         if continue then reader cvar dvar else pure ()
-
-type Strategy = GameState -> MVar Command -> MVar Input -> IO ()
-
-strategy1 ∷ Strategy
-strategy1 gs cin cout = do
-    if true  -- there is a next move
-    then do
-        m <- pure M{player=WHITE, piece=PAWN, promote=EMPTY, from=E2, to=E4}
-        -- this could have taken a while, let's see if we got something meanwhile
-        abort ← cin.poll
-        case abort of
-            Just false → pure ()   -- abort
-            Just true  → println "# protocol error, got CONTINUE before sending move" >> stdout.flush
-            Nothing    → do 
-                cout.put (MV m)
-                continue <- cin.take
-                if continue then strategy1 gs cin cout else pure ()
-    else do 
-        cout.put NoMore
-        pure ()
 
 protocol :: Strategy → GameState → IO ()
 protocol strategy gs  = do
-    case gs.state of
-        FORCED → do
-            cmd ← gs.ivar.take
-            case cmd of
-                EOF     → pure ()   -- too bad
-                MV _    → do 
-                    println "# protocol error, got a move in forced mode." >> stdout.flush
+ 
+        println ("# protocol state=" ++ gs.state.show ++ ", player=" ++ gs.player.show)
+        stdout.flush
+        
+        case gs.state of
+            TERMINATED → pure ()
+            FORCED → do
+                cmd ← gs.ivar.take
+                commandProcessing cmd >>= protocol strategy 
+            PLAYING
+                | gs.current.turn == gs.player → do
+                    cmd ← gs.ivar.poll
+                    maybe think commandProcessing cmd >>= protocol strategy
+                | otherwise → gs.ivar.take >>= commandProcessing >>= protocol strategy
+            THINKING since = do
+                now ← System.currentTimeMillis ()
+                let time = max 50 (gs.timePerMove - (now - since))
+                cmd ← gs.ivar.wait time.int
+                case cmd of
+                    Nothing → do                    -- time out while thinking
+                        gs.tvar.offer false         -- tell strategy to finish
+                        sendMove gs >>= protocol strategy
+                    Just EOF → do
+                        println "# EOF on standard input while thinking!?"
+                        gs.tvar.offer false 
+                        pong gs.pings
+                        pure ()
+                    Just (MV id m)
+                        | id == gs.sid = do
+                            gs.tvar.put true
+                            protocol strategy gs.{best=Just m}
+                        | otherwise = do
+                            println "# ignoring move from previous strategy instance." >> stdout.flush
+                            protocol strategy gs
+                    Just (NoMore id)
+                        | id == gs.sid = sendMove gs >>= protocol strategy
+                        | otherwise = do
+                            println "# ignoring NoMore from previous strategy instance." >> stdout.flush
+                            protocol strategy gs
+                    -- xboard command while thinking
+                    -- we accept ping, force, new, quit and ?
+                    Just (Line 's*quit\b') → do
+                        gs.tvar.offer false
+                        gs.rvar.put false
+                        pure ()
+                    Just (Line xboard) → do
+                        gs.rvar.put true 
+                        case xboard of
+                            m~'^\s*ping\s+(\d+)' → do
+                                let p = maybe [] (pure . String.atoi) (m.group 1) 
+                                protocol strategy gs.{pings <- (p++)}
+                            '^\s*force\b' → do
+                                gs.tvar.offer false 
+                                pong gs.pings
+                                protocol strategy gs.{state=FORCED, best=Nothing}
+                            '^\s*new\b' → do
+                                gs.tvar.offer false 
+                                pong gs.pings
+                                protocol strategy gs.{history=[initialBoard], best=Nothing,
+                                                     state=PLAYING, player=BLACK}
+                            "?" → sendMove gs >>= protocol strategy
+                            other → do
+                                println ("Error (command not legal now): " ++ xboard)
+                                stdout.flush
+                                protocol strategy gs
+                        
+        
+    where
+        think = do
+            now ← System.currentTimeMillis ()
+            mv  ← MVar.newEmpty
+            forkIO (strategy gs mv gs.ivar)
+            pure gs.{state=THINKING now, best=Nothing, tvar=mv}
+        commandProcessing cmd = case cmd of
+                EOF     → pure gs.{state=TERMINATED}   -- too bad
+                MV _ _  → do
+                    println "# ignoring an unexpected move." >> stdout.flush
                     gs.tvar.offer false
-                    protocol strategy gs
-                NoMore  → do
-                    println "# protocol error, got NoMore in forced mode." >> stdout.flush
-                    protocol strategy gs
+                    pure gs
+                NoMore _ → do
+                    println "# ignoring an unexpected NoMore." >> stdout.flush
+                    pure gs
                 Line command → do
-                    gs.rvar.put true
-                    process command gs >>= protocol strategy
-    pure ()
+                    xboardCommand command gs
+        -- send outstanding pongs
+        pong [] = pure ()
+        pong (p:ps) = pong ps >> println ("pong " ++ show p) >> stdout.flush
+        sendMove ∷ GameState → IO GameState
+        sendMove gs = case gs.best of 
+                Nothing →  do            -- now we have a problem, there is no move
+                    println "# strategy busy, but no move found yet"
+                    println "resign"
+                    stdout.flush
+                    pong gs.pings
+                    pure gs.{state=FORCED, pings=[]}
+                Just m → do
+                    let pos = applyMove gs.current m
+                        ms  = moves pos
+                        mate = null ms && not stalemate
+                        stalemate = null ms && notInCheck pos
+                        moves50 = not mate && not stalemate && pos.getPlyCounter > 99
+                        repetition = not mate && not stalemate && not moves50 
+                                              && length (filter (==pos) gs.history) > 1
+                        finished = mate || stalemate || moves50 || repetition
+                    print "move "
+                    print m.from
+                    print m.to
+                    when (m.promote >= KNIGHT) do
+                        print (m.promote.show.toLowerCase)
+                    println ""
+                    
+                    println ("# after " ++ show m)
+                    println ("# " ++ show (whatIsOn pos m.from))
+                    println ("# " ++ show (whatIsOn pos m.to)) 
+            
+                    when (stalemate)  do  println "1/2-1/2 {Stalemate}"
+                    when (mate)       do  if pos.turn == WHITE
+                                            then println "0-1 {Black mates}"
+                                            else println "1-0 {White mates}"
+                    when (moves50)    do  println "1/2-1/2 {50 moves}"
+                    when (repetition) do  println "1/2-1/2 {repetition}"
+                    stdout.flush
+                    pong gs.pings
+                    pure  gs.{history ← (pos:), pings = [], sid ← succ,
+                                state = if finished then FORCED else PLAYING,
+                                best  = Nothing}
+ 
 
 
-process ∷ String → GameState → IO GameState
-process command gs = do
+xboardCommand ∷ String → GameState → IO GameState
+xboardCommand command gs = do
+    println ("# xboardCommand: " ++ command)
+    stdout.flush
+    gs.rvar.put  (command !~ '^\s*quit\b') 
     case command of
         '^\s*(accepted|rejected|xboard|random|cores|hard|easy|post)\b'    
                             → pure gs
@@ -86,10 +232,12 @@ process command gs = do
             stdout.flush
             pure gs
         '^\s*new\b'         → pure gs.{history=[initialBoard], state=PLAYING, player=BLACK}
-        '^\s*quit\b'        → pure gs
+        '^\s*quit\b'        → do
+                                gs.tvar.offer false     -- just in case
+                                pure gs.{state=TERMINATED}
         '^\s*force\b'       → pure gs.{state=FORCED}
         '^\s*playother\b'   → pure gs.{state=PLAYING, player = gs.current.turn.opponent}
-        '^\s*go\b'          → pure gs.{state=PLAYING, player = gs.current.turn.opponent}
+        '^\s*go\b'          → pure gs.{state=PLAYING, player = gs.current.turn}
         -- user makes a move
         m~'^\s*usermove ([a-h][1-8])([a-h][1-8])([nbrq]?)\b' → do
             println "# in usermove"
@@ -115,7 +263,7 @@ process command gs = do
                 else do
                     let mv  = head ms
                         pos = applyMove p mv
-                        gs' = gs.{history ← (pos:)}
+                        gs' = gs.{history ← (pos:), sid ← succ}
                     println ("# after " ++ show mv)
                     println ("# " ++ show (whatIsOn pos mv.from))
                     println ("# " ++ show (whatIsOn pos mv.to))
@@ -133,36 +281,45 @@ process command gs = do
             pure gs
         
 
-think ∷ GameState → IO GameState
-think gs = do
-        let m   = head (moves (head gs.history))
-            pos = applyMove (head gs.history) m
-        print "move "
-        print m.from
-        print m.to
-        when (m.promote >= KNIGHT) do
-            print (m.promote.show.toLowerCase)
-        println ""
-        println ("# after " ++ show m)
-        println ("# " ++ show (whatIsOn pos m.from))
-        println ("# " ++ show (whatIsOn pos m.to)) 
-
-        when (null (moves pos)) do
-            if (notInCheck pos)
-                then println "1/2-1/2 (Stalemate)"
-                else if pos.turn == WHITE
-                    then println "0-1 (Black mates)"
-                    else println "1-0 (White mates)"
-        when (not (null (moves pos)) && pos.getPlyCounter > 99) do
-            println "1/2-1/2 (50 moves)"
-        when (not (null (moves pos)) && pos.getPlyCounter < 100 && length (filter (==pos) gs.history) > 1) do
-            println "1/2-1/2 (repetition)"
-        stdout.flush
-        pure  gs.{history ← (pos:)}
- 
+initialGS = do
+    rvar ← MVar.newEmpty
+    tvar ← MVar.newEmpty
+    ivar ← MVar.newEmpty
+    pure GS{history=[initialBoard], state=FORCED, player=BLACK, 
+            rvar, tvar, ivar, sid=0, pings=[], best=Nothing, timePerMove=30000} 
             
---main _ = protocol GS{history=[initialBoard], force=true} 
---    `catch` (\(x::EOFException) -> pure ())
---    `finally` do
---        println "# exiting"
---        stdout.flush
+main _ = do
+    gs ← initialGS
+    forkOS (reader gs.rvar gs.ivar)
+    protocol strategyFirst gs
+    Concurrent.shutdown
+     
+type Strategy = GameState -> MVar Command -> MVar Input -> IO ()
+
+strategyTemplate ∷ Strategy
+strategyTemplate gs cin cout = do
+    if true  -- there is a next move
+    then do
+        m <- pure M{player=WHITE, piece=PAWN, promote=EMPTY, from=E2, to=E4}
+        -- this could have taken a while, let's see if we got something meanwhile
+        abort ← cin.poll
+        case abort of
+            Just false → pure ()   -- abort
+            Just true  → println "# protocol error, got CONTINUE before sending move" >> stdout.flush
+            Nothing    → do 
+                cout.put (MV gs.sid m)
+                continue <- cin.take
+                if continue then strategyTemplate gs cin cout else pure ()
+    else do 
+        cout.put (NoMore gs.sid)
+        pure ()
+
+
+strategyResign :: Strategy
+strategyResign gs cin cout = cout.put (NoMore gs.sid)
+
+strategyFirst :: Strategy
+strategyFirst gs cin cout = do
+    cout.put (MV gs.sid (head (moves gs.current)))
+    continue ← cin.take
+    if continue then cout.put (NoMore gs.sid) else pure ()
