@@ -2,3 +2,4 @@
 build/
 *.jar
 *.classpath
+xboard.debug
