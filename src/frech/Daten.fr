@@ -94,6 +94,9 @@ type Fields = BitSet Index
 
 allFields = BitSet (-1L) :: Fields
 
+card ∷ BitSet α → Int
+card f = popCount (BitSet.set f)
+
 --- The players taking part in the game
 data Player = BLACK | WHITE where
     pure native (==) "=="     :: Player -> Player -> Bool
@@ -289,6 +292,12 @@ data Move = M {!player ∷ Player, !piece, !promote ∷ Piece, !from, !to ∷ In
     hashCode m = ((m.player.hashCode * 31 + m.piece.hashCode) * 31 + m.from.hashCode) * 31 + m.to.hashCode
 instance Eq Move
 deriving Show Move
+
+--- show 'Move' in algebraic notation
+algebraic :: Move → String
+algebraic m = show m.from ++ show m.to ++ p
+    where
+        p = if m.promote >= KNIGHT && m.piece == PAWN then m.promote.show.toLowerCase else ""
 
 --- List of possible 'Moves' in a given 'Position'. 
 --- The moves may still turn out illegal due to check.
@@ -642,16 +651,17 @@ applyMove !p !m
                             else singleton m.from `union` singleton (from (ord m.to + 8))
                         else singleton m.from
             -- field that will be set after the move
-            !toMask = singleton m.to 
+            !toMask = singleton m.to
+            !piece  = if m.piece == PAWN && m.promote >= KNIGHT then m.promote else m.piece 
             whites = if m.player == WHITE then (p.whites `diff` fromMask) `union` toMask 
                         else  p.whites `diff` (fromMask `union` toMask) 
-            pawnSet = if m.piece == PAWN || m.piece == KING || m.piece == KNIGHT
+            pawnSet = if piece == PAWN || piece == KING || piece == KNIGHT
                         then (p.pawnSet `diff` fromMask) `union` toMask
                         else p.pawnSet `diff` (fromMask  `union` toMask)
-            bishopSet = if m.piece == BISHOP || m.piece == QUEEN || m.piece == KNIGHT
+            bishopSet = if piece == BISHOP || piece == QUEEN || piece == KNIGHT
                         then (p.bishopSet `diff` fromMask) `union` toMask
                         else p.bishopSet `diff`  (fromMask  `union` toMask)
-            rookSet = if m.piece == ROOK  || m.piece == QUEEN || m.piece == KING
+            rookSet = if piece == ROOK  || piece == QUEEN || piece == KING
                         then (p.rookSet `diff` fromMask) `union` toMask
                         else p.rookSet `diff`  (fromMask  `union` toMask)
         castling ∷ Move → Position → Position
@@ -779,7 +789,7 @@ validRookTargets p from mask = go p from (mask `inter` rookTargets from) empty
                . place BLACK BISHOP (BitSet.fromList [C8, F8]) 
                $ emptyBoard
 
-main = do
+testmain = do
     drawBoard emptyBoard
     print "Knight: "
     println (knightTargets E4)
