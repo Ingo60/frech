@@ -1,0 +1,149 @@
+module frech.Eval where
+
+import Data.Bits (BitSet, .^. , .&.)
+
+import frech.Daten
+
+--- Base values for 'Piece's in centipawns 
+pieceValue EMPTY = 0
+pieceValue PAWN  = 100
+pieceValue KNIGHT = 300
+pieceValue BISHOP = 300
+pieceValue ROOK   = 500
+pieceValue QUEEN  = 800
+pieceValue KING   = 1000
+
+--- take the value in favor of a certain 'Player'
+forP ∷ Player → Int → Int
+forP WHITE n = n
+forP BLACK n = negate  n
+
+--- discount n c m
+--- discount n% from m if condition holds
+discount !n !condition !m = if condition then m - ((m*n) `quot` 100) else m 
+
+--- penalize player condition n
+--- If condition holds, count n in favor of players opponent, else 0
+penalize ∷ Player → Bool → Int → Int
+penalize p c n = if c then forP p.opponent n else 0   
+
+--- replaces 
+--- > length (filter (==pos) history)
+--- saving thunks 
+countEqPos :: Position -> [Position] -> Int
+countEqPos !pos !history = go pos history 0
+    where
+        go ∷ Position → [Position] → Int → Int
+        go !p [] !n = n
+        go !p (h:hs) !n
+            | p == h    = go p hs (n+1)
+            | otherwise = go p hs n 
+
+--- 'Position' value when 'BLACK' is mate.
+!blackIsMate = 999999
+--- 'Position' value when 'WHITE' is mate.
+!whiteIsMate = -999999
+
+clearLowestBit f = BitSet (n .^. (n .&. negate n)) where !n = BitSet.set f
+
+{--
+    Evaluate a 'Position'
+
+    Positive values indicate a 'Position' favourable for 'WHITE', whereas negative ones indicate 
+    'BLACK' is ahead.
+    
+    Special values:
+    
+    1. 0 may indicate stalemate, repeated position or draw because of 50 moves rule.
+    2. 999999 indicates 'BLACK' is mate.
+    3. -999999 indicates 'WHITE' is mate.
+-}
+
+eval :: [Position] → Position → Int
+eval history pos
+    | mate = if pos.turn == BLACK then blackIsMate else whiteIsMate
+    | stalemate = 0
+    | pos.getPlyCounter >= 100 = 0 
+    | countEqPos pos history >= 2 = 0
+    | otherwise = go pos pos.figures 0 
+                    + forP pos.turn (5 * length ms)
+                    + forP pos.turn.opponent (5 * length oms)
+    where
+        !ms = moves pos
+        !oms = moves (if pos.turn == WHITE  then pos.{flags ← (`diff`  whiteToMove)} 
+                                            else pos.{flags ← (`union` whiteToMove)})
+        mate = null ms && not stalemate
+        stalemate = null ms && notInCheck pos
+        -- compute a value for every 'Piece' and sum it up
+        go ∷ Position → Fields → Int → Int
+        go pos m n
+            | null m = n
+            | otherwise = go pos (m `diff` fx) (n + score pos ix)
+            where
+                !ix = bitIndex m
+                !fx = singleton ix
+        -- compute the value of a 'Piece'
+        score ∷ Position → Index → Int
+        score pos ix = forP fi.player (pieceValue fi.piece) + hanging + attacked
+                       -- + strafe * defend fi attVector defVector 0 `quot` 100
+            where
+                hanging = if isAttacked pos ix pos.turn 
+                                && fi.player != pos.turn
+                                && not (isAttacked pos ix fi.player)
+                        then forP pos.turn (pieceValue fi.piece)
+                        else 0
+                attacked = if fi.player == pos.turn 
+                                && isAttacked pos ix pos.turn.opponent
+                            then forP pos.turn.opponent (pieceValue fi.piece `quot` 20)
+                            else 0
+                !strafe = if fi.player == pos.turn then 10 else 80
+                !fi = whatIsOn pos ix
+                defend p atts (d:defs) n 
+                    | d.wo.set == 0L = defend p atts defs n
+                defend p [] defs n = n          -- not attacked
+                defend p (a:atts) defs n
+                    | a.wo.set == 0L = defend p atts defs n             -- no more such attackers
+                    | a.piece == KING, not (null defs) = n              -- KING cannot capture defended
+                    -- now, place the attacker on stage and suppose defender captures
+                    -- count the value of the piece in question in favor of the opponent 
+                    | otherwise = defend a defs (a.{wo ← clearLowestBit}:atts) 
+                                    (n + forP p.player.opponent (pieceValue p.piece)) 
+                     
+                !attVector = case card (attackedByPawns pos ix fi.player.opponent) of
+                    0 -> attVectorN
+                    n -> FI{player=fi.player.opponent, piece=PAWN, wo=BitSet n.long} !: attVectorN
+                !attVectorN = case card (attackedByKnights pos ix fi.player.opponent) of
+                    0 -> attVectorK
+                    n -> FI{player=fi.player.opponent, piece=KNIGHT, wo=BitSet n.long} !: attVectorK
+                !attVectorB = case card (attackedByBishops pos ix fi.player.opponent) of
+                    0 -> attVectorR
+                    n -> FI{player=fi.player.opponent, piece=BISHOP, wo=BitSet n.long} !: attVectorR
+                !attVectorR = case card (attackedByRooks pos ix fi.player.opponent) of
+                    0 -> attVectorQ
+                    n -> FI{player=fi.player.opponent, piece=ROOK, wo=BitSet n.long} !: attVectorQ
+                !attVectorQ = case card (attackedByQueens pos ix fi.player.opponent) of
+                    0 -> attVectorK
+                    n -> FI{player=fi.player.opponent, piece=QUEEN, wo=BitSet n.long} !: attVectorK
+                !attVectorK = case card (attackedByKings pos ix fi.player.opponent) of
+                    0 -> []
+                    n -> [FI{player=fi.player.opponent, piece=KING, wo=BitSet n.long}]
+                !defVector = case card (attackedByPawns pos ix fi.player) of
+                    0 -> defVectorN
+                    n -> FI{player=fi.player, piece=PAWN, wo=BitSet n.long} !: defVectorN
+                !defVectorN = case card (attackedByKnights pos ix fi.player) of
+                    0 -> defVectorK
+                    n -> FI{player=fi.player, piece=KNIGHT, wo=BitSet n.long} !: defVectorK
+                !defVectorB = case card (attackedByBishops pos ix fi.player) of
+                    0 -> defVectorR
+                    n -> FI{player=fi.player, piece=BISHOP, wo=BitSet n.long} !: defVectorR
+                !defVectorR = case card (attackedByRooks pos ix fi.player) of
+                    0 -> defVectorQ
+                    n -> FI{player=fi.player, piece=ROOK, wo=BitSet n.long} !: defVectorQ
+                !defVectorQ = case card (attackedByQueens pos ix fi.player) of
+                    0 -> defVectorK
+                    n -> FI{player=fi.player, piece=QUEEN, wo=BitSet n.long} !:defVectorK
+                !defVectorK = case card (attackedByKings pos ix fi.player) of
+                    0 -> []
+                    n -> [FI{player=fi.player, piece=KING, wo=BitSet n.long}]
+                  
+                
