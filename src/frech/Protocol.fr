@@ -22,6 +22,8 @@ type Clock   = Long
 data State = FORCED | PLAYING | THINKING Clock | TERMINATED
 derive Show State
 
+type Strategy = GameState -> MVar Command -> MVar Input -> IO ()
+
 data GameState = GS { 
         history :: [Position]       {-- 'Position's reached since last "new" or "setboard" xboard-command.
                                         The head of this non-empty list is the current position.
@@ -156,10 +158,19 @@ protocol strategy gs  = do
         
     where
         think = do
-            now ← System.currentTimeMillis ()
-            mv  ← MVar.newEmpty
-            forkIO (strategy gs mv gs.ivar)
-            pure gs.{state=THINKING now, best=Nothing, tvar=mv}
+            let ms = moves gs.current
+                mate = null ms && not stalemate
+                stalemate = null ms && notInCheck gs.current
+            if mate || stalemate 
+            then do
+                println "# thinking finds game that has ended"
+                stdout.flush
+                pure gs.{state=FORCED, best=Nothing}
+            else do
+                now ← System.currentTimeMillis ()
+                mv  ← MVar.newEmpty
+                forkIO (strategy gs mv gs.ivar)
+                pure gs.{state=THINKING now, best=Nothing, tvar=mv}
         commandProcessing cmd = case cmd of
                 EOF     → pure gs.{state=TERMINATED}   -- too bad
                 MV _ _  → do
@@ -191,12 +202,7 @@ protocol strategy gs  = do
                         repetition = not mate && not stalemate && not moves50 
                                               && length (filter (==pos) gs.history) > 1
                         finished = mate || stalemate || moves50 || repetition
-                    print "move "
-                    print m.from
-                    print m.to
-                    when (m.promote >= KNIGHT) do
-                        print (m.promote.show.toLowerCase)
-                    println ""
+                    println ("move " ++ algebraic m)
                     
                     println ("# after " ++ show m)
                     println ("# " ++ show (whatIsOn pos m.from))
@@ -257,7 +263,7 @@ xboardCommand command gs = do
             if null ms
                 then do
                     println ("Illegal move: " ++ command.replaceFirst 'usermove ' "")
-                    mapM_  (println . ("# " ++) . show) (moves p)
+                    mapM_  (println . ("# " ++) . algebraic) (moves p)
                     stdout.flush
                     pure gs
                 else do
@@ -280,46 +286,3 @@ xboardCommand command gs = do
             stdout.flush
             pure gs
         
-
-initialGS = do
-    rvar ← MVar.newEmpty
-    tvar ← MVar.newEmpty
-    ivar ← MVar.newEmpty
-    pure GS{history=[initialBoard], state=FORCED, player=BLACK, 
-            rvar, tvar, ivar, sid=0, pings=[], best=Nothing, timePerMove=30000} 
-            
-main _ = do
-    gs ← initialGS
-    forkOS (reader gs.rvar gs.ivar)
-    protocol strategyFirst gs
-    Concurrent.shutdown
-     
-type Strategy = GameState -> MVar Command -> MVar Input -> IO ()
-
-strategyTemplate ∷ Strategy
-strategyTemplate gs cin cout = do
-    if true  -- there is a next move
-    then do
-        m <- pure M{player=WHITE, piece=PAWN, promote=EMPTY, from=E2, to=E4}
-        -- this could have taken a while, let's see if we got something meanwhile
-        abort ← cin.poll
-        case abort of
-            Just false → pure ()   -- abort
-            Just true  → println "# protocol error, got CONTINUE before sending move" >> stdout.flush
-            Nothing    → do 
-                cout.put (MV gs.sid m)
-                continue <- cin.take
-                if continue then strategyTemplate gs cin cout else pure ()
-    else do 
-        cout.put (NoMore gs.sid)
-        pure ()
-
-
-strategyResign :: Strategy
-strategyResign gs cin cout = cout.put (NoMore gs.sid)
-
-strategyFirst :: Strategy
-strategyFirst gs cin cout = do
-    cout.put (MV gs.sid (head (moves gs.current)))
-    continue ← cin.take
-    if continue then cout.put (NoMore gs.sid) else pure ()
