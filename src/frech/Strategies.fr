@@ -3,6 +3,7 @@ module frech.Strategies where
 
 import frege.control.Concurrent(forkOS, MVar)
 import Data.List(sortBy)
+import Lib.ForkJoin
 
 import frech.Protocol
 import frech.Eval
@@ -26,6 +27,7 @@ main [arg] = do
             "best"      → strategyBest
             "first"     → strategyFirst
             "resign"    → strategyResign
+            "minimax"   → strategyMiniMax
             _           → strategyBest   
     protocol strategy gs
     Concurrent.shutdown
@@ -43,7 +45,7 @@ strategyTemplate gs cin cout = do
             Just false → pure ()   -- abort
             Just true  → println "# protocol error, got CONTINUE before sending move" >> stdout.flush
             Nothing    → do 
-                cout.put (MV gs.sid m)
+                cout.put (MV gs.sid PV{moves=[m], val=0, nodes=1})
                 continue <- cin.take
                 if continue then strategyTemplate gs cin cout else pure ()
     else do 
@@ -59,7 +61,8 @@ strategyResign gs cin cout = cout.put (NoMore gs.sid)
 --- Scored 3 times draw by repetition in a 10 games match with fairymax!
 strategyFirst :: Strategy
 strategyFirst gs cin cout = do
-    cout.put (MV gs.sid (head (moves gs.current)))
+    let m = head (moves gs.current)
+    cout.put (MV gs.sid PV{moves=[m], val=0, nodes=1})
     continue ← cin.take
     if continue then cout.put (NoMore gs.sid) else pure ()
 
@@ -70,24 +73,53 @@ strategyBest gs cin cout = do
         best = if gs.current.turn == WHITE 
             then head (sortBy (descending (eval gs.history . applyMove gs.current)) ms)
             else head (sortBy (ascending  (eval gs.history . applyMove gs.current)) ms)
-    println (" 1 " ++ show (eval gs.history (applyMove gs.current best)) ++ " 1 7 " ++ algebraic best)
-    stdout.flush
-    
-    cout.put (MV gs.sid best)
+    cout.put (MV gs.sid PV{moves=[best], val=0, nodes=1})
     continue ← cin.take
     if continue then cout.put (NoMore gs.sid) else pure ()
 
 
---strategyMiniMax :: Strategy
---strategyMiniMax gs cin cout = do
---        let ms = moves gs.current
---            best = head ms 
---        cout.put (MV gs.sid best)
---        continue ← cin.take
---        if continue 
---        then do
---            tryMoves (forP gs.current.turn whiteIsMate) (moves gs.current)
---            cout.put (NoMore gs.sid)
---        else pure ()
---    where        
-     
+strategyMiniMax :: Strategy
+strategyMiniMax gs cin cout = do
+        let ms = moves gs.current
+            best = head ms 
+        cout.put (MV gs.sid PV{moves=[best], val=0, nodes=1})
+        continue ← cin.take
+        if continue 
+        then do
+            tryMoves cin cout gs (forP gs.current.turn whiteIsMate) (moves gs.current)
+        else pure ()
+    where
+        tryMoves ∷ MVar Command → MVar Input → GameState → Int → [Move] → IO ()
+        tryMoves cin cout gs max [] = cout.put (NoMore gs.sid)
+        tryMoves cin cout gs max (m:ms) = do
+            let pv = miniMax gs.history 2 m
+                !better = if gs.current.turn == WHITE then pv.val > max else pv.val < max
+            abort ← pure Nothing -- if better then cin.poll else cin.poll       -- make sure it's evaluated
+            case abort of
+                Just false → println "# strategy aborted" >> stdout.flush
+                Just true  → println "# protocol error, got CONTINUE before sending move" >> stdout.flush
+                Nothing    →  
+                    if better then do
+                        cout.put (MV gs.sid pv)
+                        continue ← cin.take
+                        if continue
+                        then tryMoves cin cout gs pv.val ms
+                        else pure ()        
+                    else tryMoves cin cout gs max ms
+
+
+
+miniMax ∷ [Position] → Int → Move → Variation
+-- miniMax hist 0 m = PV [m] (eval hist (applyMove (head hist) m)) 1 
+miniMax hist n m
+    | n == 0 || null ms    = PV [m] (eval hist pos) 1
+    | otherwise            = best.{nodes, moves ← (m:)} 
+    where
+        !pos   = applyMove (head hist) m
+        hist'  = pos:hist
+        !ms    = moves pos
+        pvs    = mapP (miniMax hist' (n-1)) ms 
+        nodes  = fold (\n pv -> n + pv.nodes) 0 pvs
+        best   = if pos.turn == WHITE
+                    then (maximum pvs) 
+                    else (minimum pvs)

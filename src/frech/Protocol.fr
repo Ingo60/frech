@@ -6,11 +6,20 @@ import Control.Concurrent(MVar, forkIO, forkOS)
 import frech.Daten
 -- import frech.FEN(decodeFEN)
 
+data Variation = PV { !moves :: [Move], !val :: Int, !nodes :: Int}
+instance Ord Variation where
+    hashCode pv = 0
+    pv1 < pv2 = pv1.val < pv2.val
+    pv1 == pv2 = pv1.val == pv2.val
+    pv1 > pv2 = pv1.val > pv2.val
+    pv1 <=> pv2 = pv1.val <=> pv2.val
+deriving Show Variation
+
 --- when the driver receives 'NoMore' or 'EOF' there won\'t be something to read from this 'MVar'thereafter
 data Input = 
         Line String     --- Sent by input reader when it has read a line of input.
         | EOF           --- Sent by the input reader when there is no more input. 
-        | MV Int Move   --- Sent by strategy identified by some number when it has found a 'Move'
+        | MV Int Variation --- Sent by strategy identified by some number when it has found a 'Move'
         | NoMore Int    --- Sent by strategy identified by some number when it can't find more 'Move's.
 deriving Eq Input
 deriving Show Input
@@ -109,22 +118,32 @@ protocol strategy gs  = do
                 cmd ← gs.ivar.wait time.int
                 case cmd of
                     Nothing → do                    -- time out while thinking
+                        println "# Thinking timed out." >> stdout.flush
                         gs.tvar.offer false         -- tell strategy to finish
                         sendMove gs >>= protocol strategy
                     Just EOF → do
-                        println "# EOF on standard input while thinking!?"
+                        println "# EOF on standard input while thinking!?" >> stdout.flush
                         gs.tvar.offer false 
                         pong gs.pings
                         pure ()
-                    Just (MV id m)
+                    Just (MV id pv)
                         | id == gs.sid = do
                             gs.tvar.put true
-                            protocol strategy gs.{best=Just m}
+                            now ← System.currentTimeMillis ()
+                            println (" " ++ show (length pv.moves)   -- depth
+                                ++   " " ++ show (pv.val)            -- score in centipawns
+                                ++   " " ++ show ((now - since) `quot` 10)  -- time  in centiseconds
+                                ++   " " ++ show pv.nodes            -- nodes
+                                ++   " " ++ joined " " (map algebraic pv.moves))
+                            stdout.flush
+                            protocol strategy gs.{best=Just (head pv.moves)}
                         | otherwise = do
                             println "# ignoring move from previous strategy instance." >> stdout.flush
                             protocol strategy gs
                     Just (NoMore id)
-                        | id == gs.sid = sendMove gs >>= protocol strategy
+                        | id == gs.sid = do
+                            println "# No more moves." >> stdout.flush 
+                            sendMove gs >>= protocol strategy
                         | otherwise = do
                             println "# ignoring NoMore from previous strategy instance." >> stdout.flush
                             protocol strategy gs
