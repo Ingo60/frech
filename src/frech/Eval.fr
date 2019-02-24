@@ -68,12 +68,15 @@ eval history pos
     | otherwise = go pos pos.figures 0 
                     + forP pos.turn (5 * length ms)
                     + forP pos.turn.opponent (5 * length oms)
+                    + forP pos.turn.opponent checkBonus 
     where
         !ms = moves pos
         !oms = moves (if pos.turn == WHITE  then pos.{flags ← (`diff`  whiteToMove)} 
                                             else pos.{flags ← (`union` whiteToMove)})
-        mate = null ms && inCheck pos pos.turn 
+        mate = null ms && check 
         stalemate = null ms && not mate
+        check = inCheck pos pos.turn
+        checkBonus = if check then 25 else 0
         -- compute a value for every 'Piece' and sum it up
         go ∷ Position → Fields → Int → Int
         go pos m n
@@ -84,15 +87,11 @@ eval history pos
                 !fx = singleton ix
         -- compute the value of a 'Piece'
         score ∷ Position → Index → Int
-        score pos ix = forP fi.player (pieceValue fi.piece) + hanging + attacked
+        score pos ix = forP fi.player (pieceValue fi.piece) + hanging
             where
-                hanging = if isAttacked pos ix pos.turn 
-                                && fi.player != pos.turn
-                                && not (isAttacked pos ix fi.player)
-                        then forP pos.turn 6
+                hanging = if isAttacked pos ix fi.player.opponent 
+                                -- fi.player != pos.turn
+                                -- not (isAttacked pos ix fi.player)
+                        then forP fi.player.opponent (if isAttacked pos ix fi.player then 4 else 10)
                         else 0
-                attacked = if fi.player == pos.turn 
-                                && isAttacked pos ix pos.turn.opponent
-                            then forP pos.turn.opponent 4
-                            else 0
                 !fi = whatIsOn pos ix
