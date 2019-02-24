@@ -1,0 +1,93 @@
+--- various Strategies, and a main function that selects one
+module frech.Strategies where
+
+import frege.control.Concurrent(forkOS, MVar)
+import Data.List(sortBy)
+
+import frech.Protocol
+import frech.Eval
+import frech.Daten
+
+-- type Strategy = GameState -> MVar Command -> MVar Input -> IO ()
+
+
+initialGS = do
+    rvar ← MVar.newEmpty
+    tvar ← MVar.newEmpty
+    ivar ← MVar.newEmpty
+    pure GS{history=[initialBoard], state=FORCED, player=BLACK, 
+            rvar, tvar, ivar, sid=0, pings=[], best=Nothing, timePerMove=30000} 
+
+main [] = main ["best"]            
+main [arg] = do
+    gs ← initialGS
+    forkOS (reader gs.rvar gs.ivar)
+    let strategy = case arg of
+            "best"      → strategyBest
+            "first"     → strategyFirst
+            "resign"    → strategyResign
+            _           → strategyBest   
+    protocol strategy gs
+    Concurrent.shutdown
+main (arg:args) = main [arg] 
+     
+--- a template for new strategies
+strategyTemplate ∷ Strategy
+strategyTemplate gs cin cout = do
+    if true  -- there is a next move
+    then do
+        m <- pure M{player=WHITE, piece=PAWN, promote=EMPTY, from=E2, to=E4}
+        -- this could have taken a while, let's see if we got something meanwhile
+        abort ← cin.poll
+        case abort of
+            Just false → pure ()   -- abort
+            Just true  → println "# protocol error, got CONTINUE before sending move" >> stdout.flush
+            Nothing    → do 
+                cout.put (MV gs.sid m)
+                continue <- cin.take
+                if continue then strategyTemplate gs cin cout else pure ()
+    else do 
+        cout.put (NoMore gs.sid)
+        pure ()
+
+--- This strategy doesn't know how to play chess, thus it says it doesn't find a move.
+--- This causes the driver to resign the game, since it doesn't have a best move so far.
+strategyResign :: Strategy
+strategyResign gs cin cout = cout.put (NoMore gs.sid)
+
+--- This strategy selects the first move in the list of moves.
+--- Scored 3 times draw by repetition in a 10 games match with fairymax!
+strategyFirst :: Strategy
+strategyFirst gs cin cout = do
+    cout.put (MV gs.sid (head (moves gs.current)))
+    continue ← cin.take
+    if continue then cout.put (NoMore gs.sid) else pure ()
+
+--- This strategy selects the best move (indicated by eval), but doesn't consider opponents replies
+strategyBest :: Strategy
+strategyBest gs cin cout = do
+    let ms = moves gs.current
+        best = if gs.current.turn == WHITE 
+            then head (sortBy (descending (eval gs.history . applyMove gs.current)) ms)
+            else head (sortBy (ascending  (eval gs.history . applyMove gs.current)) ms)
+    println (" 1 " ++ show (eval gs.history (applyMove gs.current best)) ++ " 1 7 " ++ algebraic best)
+    stdout.flush
+    
+    cout.put (MV gs.sid best)
+    continue ← cin.take
+    if continue then cout.put (NoMore gs.sid) else pure ()
+
+
+--strategyMiniMax :: Strategy
+--strategyMiniMax gs cin cout = do
+--        let ms = moves gs.current
+--            best = head ms 
+--        cout.put (MV gs.sid best)
+--        continue ← cin.take
+--        if continue 
+--        then do
+--            tryMoves (forP gs.current.turn whiteIsMate) (moves gs.current)
+--            cout.put (NoMore gs.sid)
+--        else pure ()
+--    where        
+     
