@@ -176,10 +176,11 @@ protocol strategy gs  = do
                         
         
     where
-        think = do
+        think ∷ Strategy → GameState → IO GameState
+        think strategy gs = do
             let ms = moves gs.current
-                mate = null ms && not stalemate
-                stalemate = null ms && notInCheck gs.current
+                mate = null ms && inCheck gs.current gs.current.turn
+                stalemate = null ms && not mate
             if mate || stalemate 
             then do
                 println "# thinking finds game that has ended"
@@ -215,8 +216,8 @@ protocol strategy gs  = do
                 Just m → do
                     let pos = applyMove gs.current m
                         ms  = moves pos
-                        mate = null ms && not stalemate
-                        stalemate = null ms && notInCheck pos
+                        mate = null ms && inCheck pos pos.turn
+                        stalemate = null ms && not mate
                         moves50 = not mate && not stalemate && pos.getPlyCounter > 99
                         repetition = not mate && not stalemate && not moves50 
                                               && length (filter (==pos) gs.history) > 1
