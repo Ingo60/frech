@@ -2,9 +2,10 @@
 module frech.Protocol where
 
 import Control.Concurrent(MVar, forkIO, forkOS)
+import System.Random(randomIO)
 
 import frech.Daten
--- import frech.FEN(decodeFEN)
+import frech.FEN(decodeFEN)
 
 data Variation = PV { !moves :: [Move], !val :: Int, !nodes :: Int}
 instance Ord Variation where
@@ -34,18 +35,18 @@ derive Show State
 type Strategy = GameState -> MVar Command -> MVar Input -> IO ()
 
 data GameState = GS { 
-        history :: [Position]       {-- 'Position's reached since last "new" or "setboard" xboard-command.
+        !history :: [Position]       {-- 'Position's reached since last "new" or "setboard" xboard-command.
                                         The head of this non-empty list is the current position.
                                         The last entry is 'initialBoard' in case of "new" or the 
                                         'Position' received through "setboard".
                                         
                                          This list is shortened only on xboard "undo" commands.
                                          The implementation will refuse to undo the initial 'Position'. -} 
-        state :: State              {-- 
+        !state :: State              {-- 
                                         Are we in force mode, playing or thinking?
                                         In 'THINKING' a strategy task will be active. -}      
-        player :: Player            --- The colour we are playing.
-        rvar, tvar :: MVar Command  {-- 
+        !player :: Player            --- The colour we are playing.
+        !rvar, !tvar :: MVar Command  {-- 
                                         Commands are sent to the reader or strategy task through this 
                                         'MVar's. Normally every input must be answered immediately
                                         with either *true* for "continue" or *false* for "terminate" except for
@@ -66,19 +67,24 @@ data GameState = GS {
                                         xboard command, or when xboard switched to "force" mode during
                                         thinking.   
                                     --}  
-        ivar       :: MVar Input    --- 'Input' from the 'reader' and strategies.
-        sid        :: Int           {-- 
+        !ivar       :: MVar Input    --- 'Input' from the 'reader' and strategies.
+        !sid        :: Int           {-- 
                                         Strategy identifier. Used to sort out unwanted input from
                                         strategies lagging behind. Incremented on each half-move, so that
                                         only input with an id that matches this 'GameState's sid
                                         is regarded as valid.
                                     -}
-        pings      :: [Int]         --- Ping numbers received during thinking are saved here.
-        best       :: Maybe Move    --- The best move found so far
-        timePerMove :: Clock        --- time per move in milliseconds 
-    } where {
-    current GS{history} = head history
-}
+        !pings      :: [Int]         --- Ping numbers received during thinking are saved here.
+        !best       :: Maybe Variation    --- The best move found so far
+        !myTime, !oTime ∷ Clock       --- My remaining time and her remaining time in milliseconds
+    } 
+    where 
+        current GS{history} = head history
+        --- time per move in milliseconds
+        timePerMove gs = if done >= 60 then myTime gs else myTime gs `quot` (60 - done).long
+            where
+                done = (if player gs == WHITE then length (history gs) + 1 else length (history gs)) `quot` 2  
+
 
 
 reader :: MVar Command -> MVar Input -> IO ()
@@ -110,7 +116,7 @@ protocol strategy gs  = do
             PLAYING
                 | gs.current.turn == gs.player → do
                     cmd ← gs.ivar.poll
-                    maybe think commandProcessing cmd >>= protocol strategy
+                    maybe (think strategy gs) commandProcessing cmd >>= protocol strategy
                 | otherwise → gs.ivar.take >>= commandProcessing >>= protocol strategy
             THINKING since = do
                 now ← System.currentTimeMillis ()
@@ -128,15 +134,34 @@ protocol strategy gs  = do
                         pure ()
                     Just (MV id pv)
                         | id == gs.sid = do
-                            gs.tvar.put true
+                            now ← System.currentTimeMillis ()
+                            let continue = (now - since) < (9 * gs.timePerMove) `quot` 10
+                            gs.tvar.put continue
+                            println ("# we have used " ++ show (now-since) 
+                                        ++ "ms of "    ++ show (gs.timePerMove)
+                                        ++ "ms, continue=" ++ show continue)
                             now ← System.currentTimeMillis ()
                             println (" " ++ show (length pv.moves)   -- depth
                                 ++   " " ++ show (pv.val)            -- score in centipawns
                                 ++   " " ++ show ((now - since) `quot` 10)  -- time  in centiseconds
-                                ++   " " ++ show pv.nodes            -- nodes
+                                ++   " " ++ show (pv.nodes + maybe 0 Variation.nodes gs.best) -- nodes
                                 ++   " " ++ joined " " (map algebraic pv.moves))
                             stdout.flush
-                            protocol strategy gs.{best=Just (head pv.moves)}
+                            coin ← randomIO
+                            let nodes  = case gs.best of
+                                    Nothing → pv.nodes
+                                    Just old → pv.nodes + old.nodes
+                                bestpv = case gs.best of
+                                    Nothing → pv
+                                    Just best -> if abs (pv.val - best.val) < 5 
+                                        then  if coin then pv else best
+                                        else  if gs.player == WHITE 
+                                            then if pv.val > best.val then pv else best
+                                            else if pv.val < best.val then pv else best 
+                                
+                            if continue 
+                                then protocol strategy gs.{best=Just bestpv.{nodes}}
+                                else sendMove gs.{best=Just bestpv} >>= protocol strategy
                         | otherwise = do
                             println "# ignoring move from previous strategy instance." >> stdout.flush
                             protocol strategy gs
@@ -148,7 +173,7 @@ protocol strategy gs  = do
                             println "# ignoring NoMore from previous strategy instance." >> stdout.flush
                             protocol strategy gs
                     -- xboard command while thinking
-                    -- we accept ping, force, new, quit and ?
+                    -- we accept ping, force, new, quit, result and ?
                     Just (Line 's*quit\b') → do
                         gs.tvar.offer false
                         gs.rvar.put false
@@ -159,7 +184,7 @@ protocol strategy gs  = do
                             m~'^\s*ping\s+(\d+)' → do
                                 let p = maybe [] (pure . String.atoi) (m.group 1) 
                                 protocol strategy gs.{pings <- (p++)}
-                            '^\s*force\b' → do
+                            '^\s*(force|result)\b' → do
                                 gs.tvar.offer false 
                                 pong gs.pings
                                 protocol strategy gs.{state=FORCED, best=Nothing}
@@ -213,8 +238,9 @@ protocol strategy gs  = do
                     stdout.flush
                     pong gs.pings
                     pure gs.{state=FORCED, pings=[]}
-                Just m → do
-                    let pos = applyMove gs.current m
+                Just pv → do
+                    let m = head pv.moves
+                        pos = applyMove gs.current m
                         ms  = moves pos
                         mate = null ms && inCheck pos pos.turn
                         stalemate = null ms && not mate
@@ -264,6 +290,14 @@ xboardCommand command gs = do
         '^\s*force\b'       → pure gs.{state=FORCED}
         '^\s*playother\b'   → pure gs.{state=PLAYING, player = gs.current.turn.opponent}
         '^\s*go\b'          → pure gs.{state=PLAYING, player = gs.current.turn}
+        -- set the board to FEN
+        '^\s*setboard\b'    → 
+            case decodeFEN (command.replaceFirst '^\s*setboard\s+' "") of
+                Left s → do
+                    println ("Error (" ++ s ++ ")") >> stdout.flush
+                    pure gs.{state=FORCED}
+                Right p → do
+                    pure gs.{history=[p], state=FORCED, best=Nothing}
         -- user makes a move
         m~'^\s*usermove ([a-h][1-8])([a-h][1-8])([nbrq]?)\b' → do
             println "# in usermove"
@@ -290,16 +324,17 @@ xboardCommand command gs = do
                     let mv  = head ms
                         pos = applyMove p mv
                         gs' = gs.{history ← (pos:), sid ← succ}
-                    println ("# after " ++ show mv)
-                    println ("# " ++ show (whatIsOn pos mv.from))
-                    println ("# " ++ show (whatIsOn pos mv.to))
+                    --println ("# after " ++ show mv)
+                    --println ("# " ++ show (whatIsOn pos mv.from))
+                    --println ("# " ++ show (whatIsOn pos mv.to))
                     stdout.flush 
                     pure gs'
         -- result 
         '^\s*result ' -> pure gs.{state=FORCED}                        
-        -- time control (not yet implemented)
-        '^\s*(level|st|sd|nps|time|otim)\b'
-                            → pure gs
+        -- time control 
+        '^\s*(level|st|sd|nps)\b' → pure gs
+        '^\s*time\s+\d+' → pure gs.{myTime = 10 * (command.replaceFirst '^\s*time\s+' "").atol}
+        '^\s*otim\s+\d+' → pure gs.{oTime  = 10 * (command.replaceFirst '^\s*otim\s+' "").atol}
         
         other                   → do
             println ("Error (unknown command): " ++ command)

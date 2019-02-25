@@ -17,7 +17,7 @@ initialGS = do
     tvar ← MVar.newEmpty
     ivar ← MVar.newEmpty
     pure GS{history=[initialBoard], state=FORCED, player=BLACK, 
-            rvar, tvar, ivar, sid=0, pings=[], best=Nothing, timePerMove=30000} 
+            rvar, tvar, ivar, sid=0, pings=[], best=Nothing, myTime=60000, oTime = 60000} 
 
 main [] = main ["best"]            
 main [arg] = do
@@ -80,32 +80,31 @@ strategyBest gs cin cout = do
 
 strategyMiniMax :: Strategy
 strategyMiniMax gs cin cout = do
-        let ms = moves gs.current
-            best = head ms 
-        cout.put (MV gs.sid PV{moves=[best], val=0, nodes=1})
-        continue ← cin.take
-        if continue 
-        then do
-            tryMoves cin cout gs (forP gs.current.turn whiteIsMate) (moves gs.current)
-        else pure ()
+        let allMoves = moves gs.current
+        if length allMoves == 1
+            then do 
+                cout.put (MV gs.sid PV{moves=[head allMoves], val=0, nodes=1})
+                cont ← cin.take
+                if cont then cout.put (NoMore gs.sid) else pure()
+            else tryMoves 2 cin cout gs  allMoves
     where
-        tryMoves ∷ MVar Command → MVar Input → GameState → Int → [Move] → IO ()
-        tryMoves cin cout gs max [] = cout.put (NoMore gs.sid)
-        tryMoves cin cout gs max (m:ms) = do
-            let pv = miniMax gs.history 2 m
-                !better = if gs.current.turn == WHITE then pv.val > max else pv.val < max
+        tryMoves ∷ Int → MVar Command → MVar Input → GameState  → [Move] → IO ()
+        tryMoves depth cin cout gs [] = tryMoves (depth+1) cin cout gs (moves gs.current)
+        tryMoves depth cin cout gs (m:ms) = do
+            let pv = miniMax gs.history depth m
+                
             abort ← pure Nothing -- if better then cin.poll else cin.poll       -- make sure it's evaluated
             case abort of
                 Just false → println "# strategy aborted" >> stdout.flush
                 Just true  → println "# protocol error, got CONTINUE before sending move" >> stdout.flush
                 Nothing    →  
-                    if better then do
+                     do
                         cout.put (MV gs.sid pv)
                         continue ← cin.take
                         if continue
-                        then tryMoves cin cout gs pv.val ms
+                        then tryMoves depth cin cout gs ms
                         else pure ()        
-                    else tryMoves cin cout gs max ms
+
 
 
 
