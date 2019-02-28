@@ -85,7 +85,7 @@ data GameState = GS {
         current GS{history} = head history
         --- time per move in milliseconds
         timePerMove gs = max 0 (myTime gs - oTime gs) `quot` 2 
-                        + if done >= 50 then myTime gs else myTime gs `quot` 50).long
+                        + if done >= 50 then myTime gs else myTime gs `quot` 50.long
             where
                 done = (if player gs == WHITE then length (history gs) + 1 else length (history gs)) `quot` 2  
 
