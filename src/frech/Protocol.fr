@@ -1,5 +1,6 @@
 --- Protocol handler for communication with xboard.
-module frech.Protocol where
+module frech.Protocol 
+    inline(Variation.max, Variation.>, Variation.min, Variation.<) where
 
 import Control.Concurrent(MVar, forkIO, forkOS)
 import System.Random(randomIO)
@@ -14,13 +15,15 @@ instance Ord Variation where
     pv1 == pv2 = pv1.val == pv2.val
     pv1 > pv2 = pv1.val > pv2.val
     pv1 <=> pv2 = pv1.val <=> pv2.val
+    max pv1 pv2 = if pv1 > pv2 then pv1 else pv2
+    min pv1 pv2 = if pv1 < pv2 then pv1 else pv2
 deriving Show Variation
 
 --- when the driver receives 'NoMore' or 'EOF' there won\'t be something to read from this 'MVar'thereafter
 data Input = 
         Line String     --- Sent by input reader when it has read a line of input.
         | EOF           --- Sent by the input reader when there is no more input. 
-        | MV Int Variation --- Sent by strategy identified by some number when it has found a 'Move'
+        | MV !Int !Variation --- Sent by strategy identified by some number when it has found a 'Move'
         | NoMore Int    --- Sent by strategy identified by some number when it can't find more 'Move's.
 deriving Eq Input
 deriving Show Input
@@ -81,7 +84,8 @@ data GameState = GS {
     where 
         current GS{history} = head history
         --- time per move in milliseconds
-        timePerMove gs = if done >= 60 then myTime gs else myTime gs `quot` (60 - done).long
+        timePerMove gs = max 0 (myTime gs - oTime gs) `quot` 2 
+                        + if done >= 50 then myTime gs else myTime gs `quot` 50).long
             where
                 done = (if player gs == WHITE then length (history gs) + 1 else length (history gs)) `quot` 2  
 
@@ -120,7 +124,7 @@ protocol strategy gs  = do
                 | otherwise → gs.ivar.take >>= commandProcessing >>= protocol strategy
             THINKING since = do
                 now ← System.currentTimeMillis ()
-                let time = max 50 (gs.timePerMove - (now - since))
+                let time = max 500 (gs.timePerMove - (now - since))
                 cmd ← gs.ivar.wait time.int
                 case cmd of
                     Nothing → do                    -- time out while thinking
@@ -142,7 +146,9 @@ protocol strategy gs  = do
                                         ++ "ms, continue=" ++ show continue)
                             now ← System.currentTimeMillis ()
                             println (" " ++ show (length pv.moves)   -- depth
-                                ++   " " ++ show (pv.val)            -- score in centipawns
+                                ++   " " ++ show (if gs.player == BLACK 
+                                                    then negate pv.val
+                                                    else pv.val)     -- score in centipawns
                                 ++   " " ++ show ((now - since) `quot` 10)  -- time  in centiseconds
                                 ++   " " ++ show (pv.nodes + maybe 0 Variation.nodes gs.best) -- nodes
                                 ++   " " ++ joined " " (map algebraic pv.moves))
@@ -153,8 +159,10 @@ protocol strategy gs  = do
                                     Just old → pv.nodes + old.nodes
                                 bestpv = case gs.best of
                                     Nothing → pv
-                                    Just best -> if abs (pv.val - best.val) < 5 
+                                    Just best -> if abs (pv.val - best.val) < 6 
                                         then  if coin then pv else best
+                                        else  if head pv.moves == head best.moves 
+                                            then pv   -- update, presumably more exact 
                                         else  if gs.player == WHITE 
                                             then if pv.val > best.val then pv else best
                                             else if pv.val < best.val then pv else best 
@@ -250,9 +258,9 @@ protocol strategy gs  = do
                         finished = mate || stalemate || moves50 || repetition
                     println ("move " ++ algebraic m)
                     
-                    println ("# after " ++ show m)
-                    println ("# " ++ show (whatIsOn pos m.from))
-                    println ("# " ++ show (whatIsOn pos m.to)) 
+                    --println ("# after " ++ show m)
+                    --println ("# " ++ show (whatIsOn pos m.from))
+                    --println ("# " ++ show (whatIsOn pos m.to)) 
             
                     when (stalemate)  do  println "1/2-1/2 {Stalemate}"
                     when (mate)       do  if pos.turn == WHITE
