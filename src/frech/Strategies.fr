@@ -71,8 +71,8 @@ strategyBest :: Strategy
 strategyBest gs cin cout = do
     let ms = moves gs.current
         best = if gs.current.turn == WHITE 
-            then head (sortBy (descending (eval gs.history . applyMove gs.current)) ms)
-            else head (sortBy (ascending  (eval gs.history . applyMove gs.current)) ms)
+            then head (sortBy (descending (evalHist gs.history . applyMove gs.current)) ms)
+            else head (sortBy (ascending  (evalHist gs.history . applyMove gs.current)) ms)
     cout.put (MV gs.sid PV{moves=[best], val=0, nodes=1})
     continue ← cin.take
     if continue then cout.put (NoMore gs.sid) else pure ()
@@ -86,23 +86,30 @@ strategyMiniMax gs cin cout = do
                 cout.put (MV gs.sid PV{moves=[head allMoves], val=0, nodes=1})
                 cont ← cin.take
                 if cont then cout.put (NoMore gs.sid) else pure()
-            else tryMoves 2 cin cout gs  allMoves
+            else tryMoves 2 cin cout gs [] allMoves 
     where
-        tryMoves ∷ Int → MVar Command → MVar Input → GameState  → [Move] → IO ()
-        tryMoves depth cin cout gs [] = tryMoves (depth+1) cin cout gs (moves gs.current)
-        tryMoves depth cin cout gs (m:ms) = do
-            let pv = miniMax gs.history depth m
-                
+        tryMoves ∷ Int → MVar Command → MVar Input → GameState  → [Variation] → [Move] → IO ()
+        tryMoves depth cin cout gs pvs [] = tryMoves (depth+1) cin cout gs [] (ordered pvs)
+            where ordered pvs = map (head • Variation.moves) sorted
+                  sorted = if gs.player == WHITE 
+                            then sortBy (descending Variation.val) pvs
+                            else sortBy (ascending  Variation.val) pvs
+        tryMoves depth cin cout gs pvs (m:ms) = do
+            let !pvraw = miniMax gs.history depth m
+                !pvms  = length pvraw.moves * 100 - 1
+                !pv = if pvraw.val == whiteIsMate then pvraw.{val ← (+pvms)}
+                      else if pvraw.val == blackIsMate then pvraw.{val ← subtract pvms}
+                      else pvraw
             abort ← pure Nothing -- if better then cin.poll else cin.poll       -- make sure it's evaluated
             case abort of
                 Just false → println "# strategy aborted" >> stdout.flush
                 Just true  → println "# protocol error, got CONTINUE before sending move" >> stdout.flush
                 Nothing    →  
                      do
-                        cout.put (MV gs.sid pv)
+                        cout.put $! (MV gs.sid pv)
                         continue ← cin.take
                         if continue
-                        then tryMoves depth cin cout gs ms
+                        then tryMoves depth cin cout gs (pv:pvs) ms
                         else pure ()        
 
 
@@ -111,14 +118,28 @@ strategyMiniMax gs cin cout = do
 miniMax ∷ [Position] → Int → Move → Variation
 -- miniMax hist 0 m = PV [m] (eval hist (applyMove (head hist) m)) 1 
 miniMax hist n m
-    | n == 0 || null ms    = PV [m] (eval hist pos) 1
-    | otherwise            = best.{nodes, moves ← (m:)} 
+    | null ms              =  let  val = if check 
+                                    then if pos.turn == WHITE then whiteIsMate else blackIsMate
+                                    else 0 
+                                in PV [m] val 1
+    | pos.getPlyCounter >= 100  = PV [m] 0 1
+    | pos `element` hist        = PV [m] 0 1
+    | n == 0                    = PV [m] (eval pos ms) 1
+    | otherwise                 = best.{nodes, moves ← (m:)} 
     where
         !pos   = applyMove (head hist) m
-        hist'  = pos:hist
+        !check = inCheck pos pos.turn
         !ms    = moves pos
-        pvs    = mapP (miniMax hist' (n-1)) ms 
+        hist'  = pos:hist
+        pvs    = if n==2 then mapP (miniMax hist' (n-1)) ms else map (miniMax hist' (n-1)) ms 
         nodes  = fold (\n pv -> n + pv.nodes) 0 pvs
-        best   = if pos.turn == WHITE
-                    then (maximum pvs) 
-                    else (minimum pvs)
+        best   = case pvs of 
+            (pv:pvs) → if pos.turn == WHITE
+                    then (goMaximum pv pvs) 
+                    else (goMinimum pv pvs)
+            unmöglich → error "miniMax has no moves"
+        goMaximum, goMinimum ∷ Variation → [Variation] → Variation
+        goMaximum !best (pv:pvs) = goMaximum (max best pv) pvs
+        goMaximum !best []       = best 
+        goMinimum !best (pv:pvs) = goMinimum (min best pv) pvs
+        goMinimum !best []       = best 
