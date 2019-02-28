@@ -39,10 +39,17 @@ countEqPos !pos !history = go pos history 0
             | p == h    = go p hs (n+1)
             | otherwise = go p hs n 
 
+--- replace
+--- > pos `elem` positions
+--- to save thunks
+element ∷ Position → [Position] → Bool
+element !p [] = false
+element !p (h:hs) = if p == h then true else element p hs   -- enforce tail recursion
+
 --- 'Position' value when 'BLACK' is mate.
-!blackIsMate = 999999
+!blackIsMate = 99999
 --- 'Position' value when 'WHITE' is mate.
-!whiteIsMate = -999999
+!whiteIsMate = -99999
 
 clearLowestBit f = BitSet (n .^. (n .&. negate n)) where !n = BitSet.set f
 
@@ -55,26 +62,36 @@ clearLowestBit f = BitSet (n .^. (n .&. negate n)) where !n = BitSet.set f
     Special values:
     
     1. 0 may indicate stalemate, repeated position or draw because of 50 moves rule.
-    2. 999999 indicates 'BLACK' is mate.
-    3. -999999 indicates 'WHITE' is mate.
+    2. 99999 indicates 'BLACK' is mate.
+    3. -99999 indicates 'WHITE' is mate.
 -}
 
-eval :: [Position] → Position → Int
-eval history pos
+--- a bit more expensive, checks special conditions
+evalHist :: [Position] → Position → Int
+evalHist history pos
     | mate = if pos.turn == BLACK then blackIsMate else whiteIsMate
     | stalemate = 0
-    | pos.getPlyCounter >= 100 = 0 
-    | countEqPos pos history >= 2 = 0
-    | otherwise = go pos pos.figures 0 
+    | pos.getPlyCounter >= 100 = 0             -- to be done in higher functions 
+    | pos `element` history = 0
+    | otherwise = eval pos ms
+    where
+        !ms = moves pos
+        mate = null ms && check 
+        stalemate = null ms && not mate
+        check = inCheck pos pos.turn
+
+--- does not detect mate, stalemate or draw by rule
+eval ∷ Position → [Move]  → Int
+eval pos ms = go pos pos.figures 0 
                     + forP pos.turn (5 * length ms)
                     + forP pos.turn.opponent (5 * length oms)
                     + forP pos.turn.opponent checkBonus 
     where
-        !ms = moves pos
+        -- ms = moves pos
         !oms = moves (if pos.turn == WHITE  then pos.{flags ← (`diff`  whiteToMove)} 
                                             else pos.{flags ← (`union` whiteToMove)})
-        mate = null ms && check 
-        stalemate = null ms && not mate
+        -- mate = null ms && check 
+        -- stalemate = null ms && not mate
         check = inCheck pos pos.turn
         checkBonus = if check then 25 else 0
         -- compute a value for every 'Piece' and sum it up
