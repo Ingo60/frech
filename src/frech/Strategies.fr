@@ -17,7 +17,7 @@ initialGS = do
     tvar ← MVar.newEmpty
     ivar ← MVar.newEmpty
     pure GS{history=[initialBoard], state=FORCED, player=BLACK, 
-            rvar, tvar, ivar, sid=0, pings=[], best=Nothing, myTime=60000, oTime = 60000} 
+            rvar, tvar, ivar, sid=0, pings=[], best=[], myTime=60000, oTime = 60000} 
 
 main [] = main ["best"]            
 main [arg] = do
@@ -138,8 +138,3 @@ miniMax hist n m
                     then (goMaximum pv pvs) 
                     else (goMinimum pv pvs)
             unmöglich → error "miniMax has no moves"
-        goMaximum, goMinimum ∷ Variation → [Variation] → Variation
-        goMaximum !best (pv:pvs) = goMaximum (max best pv) pvs
-        goMaximum !best []       = best 
-        goMinimum !best (pv:pvs) = goMinimum (min best pv) pvs
-        goMinimum !best []       = best 

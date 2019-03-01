@@ -4,6 +4,7 @@ module frech.Protocol
 
 import Control.Concurrent(MVar, forkIO, forkOS)
 import System.Random(randomIO)
+import Data.List(sortBy)
 
 import frech.Daten
 import frech.FEN(decodeFEN)
@@ -18,6 +19,15 @@ instance Ord Variation where
     max pv1 pv2 = if pv1 > pv2 then pv1 else pv2
     min pv1 pv2 = if pv1 < pv2 then pv1 else pv2
 deriving Show Variation
+
+--- A bit cheaper than
+--- > maximum vs 
+goMaximum, goMinimum ∷ Variation → [Variation] → Variation
+goMaximum !best (pv:pvs) = goMaximum (max best pv) pvs
+goMaximum !best []       = best 
+goMinimum !best (pv:pvs) = goMinimum (min best pv) pvs
+goMinimum !best []       = best 
+
 
 --- when the driver receives 'NoMore' or 'EOF' there won\'t be something to read from this 'MVar'thereafter
 data Input = 
@@ -78,7 +88,7 @@ data GameState = GS {
                                         is regarded as valid.
                                     -}
         !pings      :: [Int]         --- Ping numbers received during thinking are saved here.
-        !best       :: Maybe Variation    --- The best move found so far
+        !best       :: [Variation]    --- Moves reported so far
         !myTime, !oTime ∷ Clock       --- My remaining time and her remaining time in milliseconds
     } 
     where 
@@ -140,6 +150,10 @@ protocol strategy gs  = do
                         | id == gs.sid = do
                             now ← System.currentTimeMillis ()
                             let continue = (now - since) < (9 * gs.timePerMove) `quot` 10
+                                report   = length pv.moves > 3 || null gs.best
+                                                || (if gs.player == WHITE then pv.val >= goMaximum gs.best
+                                                                          else pv.val <= goMinimum gs.best)
+                                nodes = fold (+) pv.nodes (map _.nodes gs.best)
                             gs.tvar.put continue
                             println ("# we have used " ++ show (now-since) 
                                         ++ "ms of "    ++ show (gs.timePerMove)
@@ -150,26 +164,13 @@ protocol strategy gs  = do
                                                     then negate pv.val
                                                     else pv.val)     -- score in centipawns
                                 ++   " " ++ show ((now - since) `quot` 10)  -- time  in centiseconds
-                                ++   " " ++ show (pv.nodes + maybe 0 Variation.nodes gs.best) -- nodes
+                                ++   " " ++ show nodes                    -- nodes
                                 ++   " " ++ joined " " (map algebraic pv.moves))
                             stdout.flush
-                            coin ← randomIO
-                            let nodes  = case gs.best of
-                                    Nothing → pv.nodes
-                                    Just old → pv.nodes + old.nodes
-                                bestpv = case gs.best of
-                                    Nothing → pv
-                                    Just best -> if abs (pv.val - best.val) < 6 
-                                        then  if coin then pv else best
-                                        else  if head pv.moves == head best.moves 
-                                            then pv   -- update, presumably more exact 
-                                        else  if gs.player == WHITE 
-                                            then if pv.val > best.val then pv else best
-                                            else if pv.val < best.val then pv else best 
-                                
+                            let best = pv : filter (\p → head p.moves != head pv.moves) gs.best    
                             if continue 
-                                then protocol strategy gs.{best=Just bestpv.{nodes}}
-                                else sendMove gs.{best=Just bestpv} >>= protocol strategy
+                                then protocol strategy gs.{best}
+                                else sendMove gs.{best} >>= protocol strategy
                         | otherwise = do
                             println "# ignoring move from previous strategy instance." >> stdout.flush
                             protocol strategy gs
@@ -195,11 +196,11 @@ protocol strategy gs  = do
                             '^\s*(force|result)\b' → do
                                 gs.tvar.offer false 
                                 pong gs.pings
-                                protocol strategy gs.{state=FORCED, best=Nothing}
+                                protocol strategy gs.{state=FORCED, best=[]}
                             '^\s*new\b' → do
                                 gs.tvar.offer false 
                                 pong gs.pings
-                                protocol strategy gs.{history=[initialBoard], best=Nothing,
+                                protocol strategy gs.{history=[initialBoard], best=[],
                                                      state=PLAYING, player=BLACK}
                             "?" → sendMove gs >>= protocol strategy
                             other → do
@@ -218,12 +219,12 @@ protocol strategy gs  = do
             then do
                 println "# thinking finds game that has ended"
                 stdout.flush
-                pure gs.{state=FORCED, best=Nothing}
+                pure gs.{state=FORCED, best=[]}
             else do
                 now ← System.currentTimeMillis ()
                 mv  ← MVar.newEmpty
                 forkIO (strategy gs mv gs.ivar)
-                pure gs.{state=THINKING now, best=Nothing, tvar=mv}
+                pure gs.{state=THINKING now, best=[], tvar=mv}
         commandProcessing cmd = case cmd of
                 EOF     → pure gs.{state=TERMINATED}   -- too bad
                 MV _ _  → do
@@ -240,14 +241,20 @@ protocol strategy gs  = do
         pong (p:ps) = pong ps >> println ("pong " ++ show p) >> stdout.flush
         sendMove ∷ GameState → IO GameState
         sendMove gs = case gs.best of 
-                Nothing →  do            -- now we have a problem, there is no move
+                [] →  do            -- now we have a problem, there is no move
                     println "# strategy busy, but no move found yet"
                     println "resign"
                     stdout.flush
                     pong gs.pings
                     pure gs.{state=FORCED, pings=[]}
-                Just pv → do
-                    let m = head pv.moves
+                variations → do
+                    coin ← randomIO
+                    let spv = if gs.player == WHITE then sortBy (descending _.val) variations 
+                                                    else sortBy (ascending _.val) variations
+                        pv = case spv of
+                                (pv1:pv2:_) → if coin && abs (pv1.val - pv2.val) < 6 then pv2 else pv1
+                                single -> head spv
+                        m = head pv.moves
                         pos = applyMove gs.current m
                         ms  = moves pos
                         mate = null ms && inCheck pos pos.turn
@@ -256,6 +263,8 @@ protocol strategy gs  = do
                         repetition = not mate && not stalemate && not moves50 
                                               && length (filter (==pos) gs.history) > 1
                         finished = mate || stalemate || moves50 || repetition
+                    println ("# sorted pvs: " ++ show (
+                                            map (\p -> (algebraic (head p.moves), p.val)) spv))
                     println ("move " ++ algebraic m)
                     
                     --println ("# after " ++ show m)
@@ -272,7 +281,7 @@ protocol strategy gs  = do
                     pong gs.pings
                     pure  gs.{history ← (pos:), pings = [], sid ← succ,
                                 state = if finished then FORCED else PLAYING,
-                                best  = Nothing}
+                                best  = []}
  
 
 
@@ -305,7 +314,7 @@ xboardCommand command gs = do
                     println ("Error (" ++ s ++ ")") >> stdout.flush
                     pure gs.{state=FORCED}
                 Right p → do
-                    pure gs.{history=[p], state=FORCED, best=Nothing}
+                    pure gs.{history=[p], state=FORCED, best=[]}
         -- user makes a move
         m~'^\s*usermove ([a-h][1-8])([a-h][1-8])([nbrq]?)\b' → do
             println "# in usermove"
