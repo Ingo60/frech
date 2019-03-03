@@ -2,7 +2,7 @@
 module frech.Strategies where
 
 import frege.control.Concurrent(forkOS, MVar)
-import Data.List(sortBy)
+import Data.List(sortBy, maximumBy, minimumBy)
 import Lib.ForkJoin
 
 import frech.Protocol
@@ -17,7 +17,7 @@ initialGS = do
     tvar ← MVar.newEmpty
     ivar ← MVar.newEmpty
     pure GS{history=[initialBoard], state=FORCED, player=BLACK, 
-            rvar, tvar, ivar, sid=0, pings=[], best=[], myTime=60000, oTime = 60000} 
+            rvar, tvar, ivar, sid=0, pings=[], best=[], backup=[], myTime=60000, oTime = 60000} 
 
 main [] = main ["best"]            
 main [arg] = do
@@ -28,6 +28,7 @@ main [arg] = do
             "first"     → strategyFirst
             "resign"    → strategyResign
             "minimax"   → strategyMiniMax
+            "ab"        → strategyAlphaBeta
             _           → strategyBest   
     protocol strategy gs
     Concurrent.shutdown
@@ -45,7 +46,7 @@ strategyTemplate gs cin cout = do
             Just false → pure ()   -- abort
             Just true  → println "# protocol error, got CONTINUE before sending move" >> stdout.flush
             Nothing    → do 
-                cout.put (MV gs.sid PV{moves=[m], val=0, nodes=1})
+                cout.put (MV gs.sid  PV{moves=[m], val=0, nodes=1})
                 continue <- cin.take
                 if continue then strategyTemplate gs cin cout else pure ()
     else do 
@@ -124,7 +125,7 @@ miniMax hist n m
                                 in PV [m] val 1
     | pos.getPlyCounter >= 100  = PV [m] 0 1
     | pos `element` hist        = PV [m] 0 1
-    | n == 0                    = PV [m] (eval pos ms) 1
+    | n == 0                    = PV [m] (eval pos) 1
     | otherwise                 = best.{nodes, moves ← (m:)} 
     where
         !pos   = applyMove (head hist) m
@@ -138,3 +139,103 @@ miniMax hist n m
                     then (goMaximum pv pvs) 
                     else (goMinimum pv pvs)
             unmöglich → error "miniMax has no moves"
+
+strategyAlphaBeta :: Strategy
+strategyAlphaBeta gs cin cout = do
+        let allMoves = moves gs.current
+        if length allMoves == 1
+            then do 
+                cout.put (MV gs.sid  PV{moves=[head allMoves], val=0, nodes=1})
+                cont ← cin.take
+                if cont then cout.put (NoMore gs.sid) else pure()
+            else tryMoves 3 whiteIsMate blackIsMate cin cout gs [] allMoves 
+    where
+        tryMoves ∷ Int → Int → Int → MVar Command → MVar Input → GameState  → [Variation] → [Move] → IO ()
+        tryMoves depth alpha beta cin cout gs pvs [] = do
+                cout.put (Forget gs.sid)
+                tryMoves (depth+1) whiteIsMate blackIsMate cin cout gs [] (varmoves (pruned gs.player sorted))
+            where
+                !sorted   = if gs.player == WHITE
+                    then sortBy (descending Variation.val) pvs
+                    else sortBy (ascending Variation.val) pvs
+ 
+                varmoves ∷ [Variation] → [Move]
+                varmoves pvs = map (head • Variation.moves) pvs
+                pruned ∷ Player → [Variation] → [Variation]
+                pruned c pvs
+                    | length pvs > 10 = if c == WHITE 
+                        then takeWhile (\x -> x.val >= relevant) pvs
+                        else takeWhile (\x -> x.val <= relevant) pvs
+                    | otherwise = pvs
+                    where
+                        max = maximum  pvs
+                        min = minimum  pvs
+                        -- das schlechteste 1/3 soll raus
+                        -- weiß: 100 -100 -->  200/3 - 100 = 66 - 100 = -43   (43..100)
+                        -- schwarz: 100 -100      
+                        relevant = if c == WHITE 
+                                    then (max.val - min.val) `quot` 3 + min.val
+                                    else max.val - (max.val - min.val) `quot` 3
+        tryMoves depth alpha beta cin cout gs pvs (m:ms) = do
+            println ("tryAlphaBeta " ++ show depth ++ " " ++ show alpha ++ " " ++ show beta ++ " " ++ algebraic m)
+            stdout.println
+            let pv = correctMateDistance (alphaBeta false gs.history depth alpha beta m)
+                alpha' = if gs.player == WHITE then 150 `percent` max alpha pv.val else alpha
+                beta'  = if gs.player == BLACK then 150 `percent` min beta  pv.val else beta
+
+            cout.put $! (MV gs.sid pv)
+            continue ← cin.take
+            if continue
+            -- then tryMoves depth alpha' beta' cin cout gs (pv:pvs) ms
+            then tryMoves depth alpha beta cin cout gs (pv:pvs) ms
+            else pure ()        
+
+maximize ∷ GameState → Int → Int → Int → [Move] → [Variation]
+maximize !gs !d !alpha !beta  []     = []
+maximize !gs !d !alpha !beta  (m:ms) = case alphaBeta false gs.history d alpha beta m of
+        pv -> pv : maximize gs d alpha' beta' ms where
+            alpha' = if gs.player == WHITE then max alpha pv.val else alpha
+            beta'  = if gs.player == BLACK then min beta  pv.val else beta
+
+correctMateDistance :: Variation → Variation
+correctMateDistance pv =   if pv.val == whiteIsMate then pv.{val = pv.val + dist}
+                      else if pv.val == blackIsMate then pv.{val = pv.val - dist}
+                      else pv
+      where
+        dist = length pv.moves * 100 - 1
+
+alphaBeta  ∷ Bool → [Position] → Int → Int → Int → Move → Variation
+alphaBeta extended hist !d !alpha !beta m
+    | null ms              =  let  val = if check 
+                                    then if pos.turn == WHITE then whiteIsMate else blackIsMate
+                                    else 0 
+                               in PV [m] val 1
+    | pos.getPlyCounter >= 100  = PV [m] 0 1
+    | pos `element` hist        = PV [m] 0 1
+    | d == 0                    = if targt.piece != EMPTY && not extended  
+                                    then alphaBeta true hist 1 alpha beta m 
+                                    else PV [m] (eval pos) 1
+    | otherwise                 = case alphaBeta extended  hist' (d-1) alpha beta (head ms) of
+                                    first → case go extended d pos.turn alpha beta hist' first (tail ms) of
+                                        best → best.{moves ← (m:)}
+    where
+        !prev  = head hist
+        !targt = whatIsOn prev m.to
+        !pos   = applyMove prev m
+        !check = inCheck pos pos.turn
+        !ms    = moves pos
+        hist'  = pos:hist
+        
+        go ∷ Bool → Int → Player → Int → Int → [Position] → Variation → [Move] → Variation
+        go ext depth player alpha beta hist best [] = best
+        go ext depth player alpha beta hist best (m:ms)
+            -- better pos.turn best beta = best
+            | player == WHITE = 
+                if best.val >= beta then best
+                else case alphaBeta ext hist (depth-1) best.val beta m of
+                    next → go ext depth player best.val beta  hist (max best next).{nodes = best.nodes + next.nodes} ms
+                
+            | otherwise =
+                if best.val <= alpha then best
+                else case alphaBeta ext hist (depth-1) alpha best.val m of 
+                    next → go ext depth  player alpha best.val  hist  (min best next).{nodes = best.nodes + next.nodes} ms

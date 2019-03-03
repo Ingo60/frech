@@ -1,17 +1,21 @@
 module frech.Eval where
 
-import Data.Bits (BitSet, .^. , .&.)
+import Data.Bits (BitSet, .^. , .&., shiftL, ushiftR)
 
 import frech.Daten
 
 --- Base values for 'Piece's in centipawns 
-pieceValue EMPTY = 0
-pieceValue PAWN  = 100
+pieceValue EMPTY  = 0
+pieceValue PAWN   = 100
 pieceValue KNIGHT = 300
 pieceValue BISHOP = 300
 pieceValue ROOK   = 500
 pieceValue QUEEN  = 800
 pieceValue KING   = 1000
+
+--- > p `percent` v
+--- computes p percent of v
+percent n m  = (n * m) `quot` 100
 
 --- take the value in favor of a certain 'Player'
 forP ∷ Player → Int → Int
@@ -73,7 +77,7 @@ evalHist history pos
     | stalemate = 0
     | pos.getPlyCounter >= 100 = 0             -- to be done in higher functions 
     | pos `element` history = 0
-    | otherwise = eval pos ms
+    | otherwise = eval pos
     where
         !ms = moves pos
         mate = null ms && check 
@@ -81,34 +85,149 @@ evalHist history pos
         check = inCheck pos pos.turn
 
 --- does not detect mate, stalemate or draw by rule
-eval ∷ Position → [Move]  → Int
-eval pos ms = go pos pos.figures 0 
-                    + forP pos.turn (5 * length ms)
-                    + forP pos.turn.opponent (5 * length oms)
-                    + forP pos.turn.opponent checkBonus 
+eval ∷ Position  → Int
+eval pos = go pos pos.figures 0 
+                    + forP pos.turn (6 * length mms)
+                    + forP pos.turn.opponent (6 * length oms)
+                    + forP pos.turn.opponent checkBonus
+                    + checkWhiteCastling pos 
+                    - checkBlackCastling pos
+                    + negate (whiteBlockedBishopPawns pos * 21)
+                    - negate (blackBlockedBishopPawns pos * 21)
+                    + negate (whiteBlockedBishops pos * 43)
+                    - negate (blackBlockedBishops pos * 43)
+                    
     where
         -- ms = moves pos
-        !oms = moves (if pos.turn == WHITE  then pos.{flags ← (`diff`  whiteToMove)} 
-                                            else pos.{flags ← (`union` whiteToMove)})
-        -- mate = null ms && check 
-        -- stalemate = null ms && not mate
+        !oms = if pos.turn == WHITE  then rawMoves pos.{flags = pos.flags `diff`  whiteToMove} 
+                                     else rawMoves pos.{flags = pos.flags `union` whiteToMove}
+        !mms = rawMoves pos
         check = inCheck pos pos.turn
         checkBonus = if check then 25 else 0
-        -- compute a value for every 'Piece' and sum it up
-        go ∷ Position → Fields → Int → Int
-        go pos m n
-            | null m = n
-            | otherwise = go pos (m `diff` fx) (n + score pos ix)
-            where
-                !ix = bitIndex m
-                !fx = singleton ix
-        -- compute the value of a 'Piece'
-        score ∷ Position → Index → Int
-        score pos ix = forP fi.player (pieceValue fi.piece) + hanging
-            where
-                hanging = if isAttacked pos ix fi.player.opponent 
-                                -- fi.player != pos.turn
-                                -- not (isAttacked pos ix fi.player)
-                        then forP fi.player.opponent (if isAttacked pos ix fi.player then 4 else 10)
-                        else 0
-                !fi = whatIsOn pos ix
+
+
+--- 'PAWN's that block the 'BISHOP'
+!rank2 = BitSet.fromList [B2,D2,E2,G2]
+!rank7 = BitSet.fromList [B7,D7,E7,G7]
+
+--- openingChecks
+checkWhiteCastling, checkBlackCastling, whiteBlockedBishopPawns, blackBlockedBishopPawns,
+    whiteBlockedBishops, blackBlockedBishops :: Position -> Int
+checkWhiteCastling pos = castling
+    where
+        !castling = if castled then 95              -- for having castled 
+                    else if castlingRights == 0 
+                            then negate 95          -- for having moved the king or rooks 
+                            else negate (30 `quot` castlingRights)          -- for not having castled yet
+        !castled = not (null (pos.flags `inter` Position.whiteHasCastledBits))
+        !castlingRights = card (pos.flags `inter` whiteCastlingRights)
+        -- To qualify as opening, there must be at least 12 pawns and some castling rights
+        -- Put differently, the opening ends with the 5th captured pawn, with castling or loss 
+        -- of castling rights on both sides.
+        -- If the game is in the opening phase, special checks are made
+        !opening = not (null (pos.flags `inter` Position.castlingBits)) && card pos.pawns >= 12
+                
+checkBlackCastling pos = castling
+    where
+        !castling = if castled then 95              -- for having castled 
+                    else if castlingRights == 0
+                            then negate 95          -- for having moved the king or rooks 
+                            else negate (30 `quot` castlingRights)          -- for not having castled yet
+        !castled = not (null (pos.flags `inter` Position.blackHasCastledBits))
+        !castlingRights = card (pos.flags `inter` blackCastlingRights)
+
+whiteBlockedBishopPawns !pos =
+                      (card                                 -- the number of ...
+                    . inter pos.figures                     -- the pieces ...
+                    . BitSet . (\b → b `shiftL` 8) . _.set)        -- that are directly before ...
+            (rank2 `inter` pos.pawns `inter` pos.whites)    -- one of our rank2-pawns 
+
+blackBlockedBishopPawns !pos =
+                      (card                                 -- the number of ...
+                    . inter pos.figures                     -- the pieces ...
+                    . BitSet . (\b -> b `ushiftR` 8) . _.set)       -- that are directly before ...
+            ((rank7 `inter` pos.pawns) `diff` pos.whites)   -- one of our rank7-pawns 
+
+whiteBlockedBishops !pos = foldIndexes pos 0 (pos.bishops `inter` pos.whites)
+    where
+        count ∷ Position → Index → Int → Int
+        count pos ix n = if null ((kingTargets ix `inter` bishopTargets ix) -- the targets around a bishop
+                        `diff` pos.whites)                -- that are not occupied by white pieces
+                        then n else n+1
+        foldFields ∷ (Fields→α→α) → α → Fields → α
+        foldFields !f !a !s 
+            | null s = a
+            | otherwise = foldFields f (f m a) s'
+                where
+                    !m  = singleton (bitIndex s)
+                    s' = s `diff` m
+        foldIndexes ∷ Position → Int → Fields → Int
+        foldIndexes !pos !a !s 
+            | null s = a
+            | otherwise = foldIndexes pos (count pos  m a) s'
+                where
+                    !m  = bitIndex s
+                    s' = s `diff` singleton m
+
+
+blackBlockedBishops !pos = foldIndexes pos 0 (pos.bishops `diff` pos.whites)
+    where
+        count ∷ Position → Index → Int → Int
+        count pos ix n = if null ((kingTargets ix `inter` bishopTargets ix) -- the targets around a bishop
+                        `diff` pos.blackFigures)                -- that are not occupied by black pieces
+                        then n else n+1
+        foldFields ∷ (Fields→α→α) → α → Fields → α
+        foldFields !f !a !s 
+            | null s = a
+            | otherwise = foldFields f (f m a) s'
+                where
+                    !m  = singleton (bitIndex s)
+                    s' = s `diff` m
+        foldIndexes ∷ Position → Int → Fields → Int
+        foldIndexes !pos !a !s 
+            | null s = a
+            | otherwise = foldIndexes pos (count pos  m a) s'
+                where
+                    !m  = bitIndex s
+                    s' = s `diff` singleton m
+
+
+
+-- compute a value for every 'Piece' and sum it up
+go ∷ Position → Fields → Int → Int
+go pos m n
+    | null m = n
+    | otherwise = go pos (m `diff` fx) (n + score pos ix)
+    where
+        !ix = bitIndex m
+        !fx = singleton ix
+--- compute the value of a 'Piece'
+score ∷ Position → Index → Int
+score pos ix = forP fi.player (pv + discounted)
+    where
+        !pv = pieceValue fi.piece
+        !fi = whatIsOn pos ix
+        !active = fi.player == pos.turn 
+        -- treatment of hanging pieces
+        !hanging  = penalty fi.piece  (leastAttacker pos ix fi.player.opponent) 
+                                                        (isAttacked pos ix fi.player)
+        -- because the active player now has a chance to help that
+        !discounted = if active then 25 `percent` hanging else hanging
+
+--- penalty h a d
+--- computes the penalty when a 'Piece' h is attacked by a and defended (or not)
+penalty hang EMPTY    defended  = 0                     -- not attacked
+penalty hang attacker false     = -- e.g. QUEEN can be captured in this move:
+                                  -- -(0.7*800) = 560
+                                  -- It doesn't help to attack some PAWN as retaliation! 
+                                  negate (70 `percent` pieceValue hang)
+penalty hang KING     defended         = 0             -- defended piece attacked by KING
+penalty hang attacker defended  = if pva >= pvh 
+                                    then 0              -- attacker won't capture
+                                    else negate (70 `percent` (pvh - pva))
+                                    -- e.g. KNIGHT can capture defended ROOK: 
+                                    -- -(0.7 * (500 - 300)) = 140
+    where
+        pva = pieceValue attacker
+        pvh = pieceValue hang
+

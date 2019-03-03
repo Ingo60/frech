@@ -1,6 +1,6 @@
 --- Basic data structures for the Chess engine
 module frech.Daten
-    inline (Position.figures, decodeFigure, member, singleton, whatIsOn, bitIndex) where
+    inline (Position.figures, decodeFigure, member, singleton, whatIsOn, bitIndex, card) where
 
 import Data.Bits
 import Data.Bits public (BitSet.union union, 
@@ -94,6 +94,7 @@ type Fields = BitSet Index
 
 allFields = BitSet (-1L) :: Fields
 
+--- How many elements in this set?
 card ∷ BitSet α → Int
 card f = popCount (BitSet.set f)
 
@@ -137,6 +138,8 @@ data Position = P {
         - If castling is possible, the corresponding target fields of the Kings
         are in the set. This would be G1 (white kingside), C1 (white queenside),
         G8 (black kingside) or C8 (black queenside).
+        - If castling actually was performed, F1, D1, F8 or G8 are set (the field
+          that the 'KING' skipped.
         - If A1 is in the set, it is 'WHITE's turn, otherwise 'BLACK's.     
     -}
     !flags   ::  Fields,
@@ -198,7 +201,19 @@ data Position = P {
                 `union` BitSet.singleton C1 
                 `union` BitSet.singleton G8
                 `union` BitSet.singleton C8
+
+    --- constant bitmask for selection of the castling done information
+    !castlingDoneBits = BitSet.singleton F1 
+                `union` BitSet.singleton D1 
+                `union` BitSet.singleton F8
+                `union` BitSet.singleton D8
     
+    !whiteHasCastledBits = BitSet.singleton F1 `union` BitSet.singleton D1
+    !blackHasCastledBits = BitSet.singleton F8 `union` BitSet.singleton D8
+    
+    playerCastledBits :: Player -> Fields
+    playerCastledBits c = if c Player.== WHITE then whiteHasCastledBits else blackHasCastledBits
+        
     !enPassantBits = BitSet.fromList (enPassantBlackPawn ++ enPassantWhitePawn)
         where
             enPassantBlackPawn = [A6 .. H6]
@@ -302,16 +317,41 @@ algebraic m = show m.from ++ show m.to ++ p
 --- List of possible 'Moves' in a given 'Position'. 
 --- The moves may still turn out illegal due to check.
 rawMoves   ∷ Position → [Move]
-rawMoves p = foldFields (genMove p) [] p.activeFigures
+rawMoves p = foldFields p (castlingMoves p) p.activeFigures
+    where
+        foldFields ∷  Position → [Move] → Fields → [Move]
+        foldFields !p !a !s 
+            | null s = a
+            | otherwise = foldFields p (genMove p m a) s'
+                where
+                    !m  = singleton (bitIndex s)
+                    s' = s `diff` m
+        
 
 --- List of possibe 'Moves' in a given 'Position'
 --- Verfied to not leave the 'KING' of the player who moves in check.
-moves p = filter (notInCheck . applyMove p)  (rawMoves p)
+moves p = filter p (rawMoves p) []
+    where 
+        filter ∷ Position → [Move] → [Move] → [Move]
+        filter !p []     !acc = acc
+        filter !p (m:ms) !acc = if notInCheck (applyMove p m)
+            then filter p ms (m:acc)
+            else filter p ms acc 
 
-genMove p m ms = castlingMoves p ++ foldIndexes (addMove p pc) ms validTargets
+genMove ∷ Position → Fields → [Move] → [Move]
+genMove p m ms = foldIndexes p pc ms validTargets
     where
         !pc      = whatIs p m
         !validTargets = pieceTargets pc `diff` p.activeFigures
+        foldIndexes ∷ Position → FigInfo → [Move] → Fields → [Move]
+        foldIndexes !p !pc !a !s 
+            | null s = a
+            | otherwise = foldIndexes p pc (addMove p pc m a) s'
+                where
+                    !m  = bitIndex s
+                    s' = s `diff` singleton m
+
+
 
 castlingMoves ∷ Position → [Move] 
 castlingMoves p = case p.turn of
@@ -364,7 +404,7 @@ pieceTargets pc = case pc.piece of
  
 
 addMove ∷ Position → FigInfo → Index → [Move] → [Move]
-addMove !p pc !to ms = case pc.piece of
+addMove !p pc !to !ms = case pc.piece of
         PAWN  → let 
                     es = if pc.player == WHITE then canWhitePawn from to else canBlackPawn from to
                     valid = if null es -- it's a capturing PAWN move
@@ -462,6 +502,18 @@ isAttacked p wo durch =    not (null (attackedByPawns           p wo durch))
                         || not (null (attackedByKings           p wo durch)) 
                         || not (null (attackedByBishopsOrQueens p wo durch)) 
                         || not (null (attackedByRooksOrQueens   p wo durch)) 
+
+--- > leastAttacker pos inx player
+--- The smallest 'Piece' of 'Player' player that attacks 'Index' inx in 'Positiuon' pos
+--- Returns 'EMPTY' if the piece is not attacked
+leastAttacker p wo durch
+    | not (null (attackedByPawns           p wo durch)) = PAWN
+    | not (null (attackedByKnights         p wo durch)) = KNIGHT
+    | not (null (attackedByBishops         p wo durch)) = BISHOP
+    | not (null (attackedByRooks           p wo durch)) = ROOK  
+    | not (null (attackedByQueens          p wo durch)) = QUEEN
+    | not (null (attackedByKings           p wo durch)) = KING
+    | otherwise                                         = EMPTY
 
 --- Negation of 'isAttacked', but factors out the 'not's and is thus a bit more efficient
 isNotAttacked ∷ Position → Index → Player → Bool
@@ -601,7 +653,10 @@ applyMove !p !m
     where
         ordinary ∷ Move → Position → Position
         ordinary m p = P{flags, whites, pawnSet, bishopSet, rookSet} where
-            flags = tomove `union` castlingRights `union` enPassantBits `union` plies
+            flags = tomove  `union` castlingRights
+                            -- `union` hasCastledInfo
+                            `union` enPassantBits 
+                            `union` plies
             -- alternate player to move
             tomove = if p.turn == WHITE then blackToMove else whiteToMove
             -- if the moving piece is the KING, the castling rights of the moving player are nullified.
@@ -631,6 +686,14 @@ applyMove !p !m
                                             else if m.to == A1 then singleton C1
                                             else if m.to == H1 then singleton G1
                                             else empty
+            --hasCastledInfo = if m.piece == KING 
+            --    then if m.player == WHITE
+            --        then     if m.from == E1 && m.to == G1 then singleton F1
+            --            else if m.from == E1 && m.to == C1 then singleton D1 else empty
+            --        else     if m.from == E8 && m.to == G8 then singleton F8
+            --        else     if m.from == E8 && m.to == C8 then singleton D8 else empty
+            --    else empty
+                
             enPassantBits = if m.piece == PAWN
                 then if m.player == WHITE
                     then if ord m.to == ord m.from + 16
@@ -666,8 +729,12 @@ applyMove !p !m
                         else p.rookSet `diff`  (fromMask  `union` toMask)
         castling ∷ Move → Position → Position
         castling m p = if m.player == WHITE
-                        then if m.promote == KING then whiteShortCastling p else whiteLongCastling p
-                        else if m.promote == KING then blackShortCastling p else blackLongCastling p 
+                        then if m.promote == KING 
+                            then (whiteShortCastling p).{flags ← union (singleton F1)} 
+                            else (whiteLongCastling p) .{flags ← union (singleton D1)}
+                        else if m.promote == KING 
+                            then (blackShortCastling p).{flags ← union (singleton F8)} 
+                            else (blackLongCastling p) .{flags ← union (singleton D8)} 
 
 --- The set of fields a 'WHITE' 'PAWN' on some 'Index' can go potentially
 pure native whitePawnTargets    frech.MDB.whitePawnTargets ∷ Index → Fields
