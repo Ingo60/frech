@@ -33,7 +33,7 @@ goMinimum !best []       = best
 data Input = 
         Line String     --- Sent by input reader when it has read a line of input.
         | EOF           --- Sent by the input reader when there is no more input. 
-        | MV !Int !Variation --- Sent by strategy identified by some number when it has found a 'Move'
+        | MV !Int ![Variation] --- Sent by strategy identified by some number when it has found a 'Move'
         | Forget Int    --- Sent by strategy when all previously computed variations should get forgotten 
         | NoMore Int    --- Sent by strategy identified by some number when it can't find more 'Move's.
 deriving Eq Input
@@ -56,7 +56,8 @@ data TimeControl = TC {
     }
 
 
-data GameState = GS { 
+data GameState = GS {
+        !name ∷ String              --- identification 
         !history :: [Position]       {-- 'Position's reached since last "new" or "setboard" xboard-command.
                                         The head of this non-empty list is the current position.
                                         The last entry is 'initialBoard' in case of "new" or the 
@@ -97,8 +98,9 @@ data GameState = GS {
                                         is regarded as valid.
                                     -}
         !pings      :: [Int]            --- Ping numbers received during thinking are saved here.
-        !best, !backup  :: [Variation]      --- Moves reported so far, and backup
+        !best, !backup  :: [Variation]  --- Moves reported so far, and backup
         !myTime, !oTime ∷ Clock         --- My remaining time and her remaining time in milliseconds
+        !cores          ∷ Int           --- # of cores we're allowed to use
     } 
     where 
         current GS{history} = head history
@@ -128,7 +130,8 @@ reader cvar dvar = do
 protocol :: Strategy → GameState → IO ()
 protocol strategy gs  = do
  
-        println ("# protocol state=" ++ gs.state.show ++ ", player=" ++ gs.player.show)
+        println ("# protocol state=" ++ gs.state.show ++ ", player=" ++ gs.player.show
+                    ++ ". cores=" ++ show gs.cores)
         stdout.flush
         
         case gs.state of
@@ -165,28 +168,27 @@ protocol strategy gs  = do
                             stdout.flush
                             protocol strategy gs.{backup = gs.best, best=[]}
                         | otherwise = protocol strategy gs
-                    Just (MV id pv)
+                    Just (MV id pvs)
                         | id == gs.sid = do
                             now ← System.currentTimeMillis ()
                             let continue = (now - since) < (9 * gs.timePerMove) `quot` 10
-                                report   = length pv.moves > 3 || null gs.best
-                                                || (if gs.player == WHITE then pv.val >= goMaximum gs.best
-                                                                          else pv.val <= goMinimum gs.best)
-                                nodes = fold (+) pv.nodes (map _.nodes gs.best)
+                                nodes = fold (+) (sum (map _.nodes gs.best)) (map _.nodes pvs)
                             gs.tvar.put continue
                             println ("# we have used " ++ show (now-since) 
                                         ++ "ms of "    ++ show (gs.timePerMove)
                                         ++ "ms, continue=" ++ show continue)
                             now ← System.currentTimeMillis ()
-                            println (" " ++ show (maximum (map (length . _.moves) (pv:gs.best)))   -- depth
-                                ++   " " ++ show (if gs.player == BLACK 
+                            mapM_ (\pv -> println (
+                                    " " ++ show (maximum (map (length . _.moves) (pvs++gs.best)))   -- depth
+                                ++  " " ++ show (if gs.player == BLACK 
                                                     then negate pv.val
                                                     else pv.val)     -- score in centipawns
                                 ++   " " ++ show ((now - since) `quot` 10)  -- time  in centiseconds
                                 ++   " " ++ show nodes                    -- nodes
-                                ++   " " ++ joined " " (map algebraic pv.moves))
+                                ++   " " ++ joined " " (map algebraic pv.moves))) pvs
                             stdout.flush
-                            let best = pv : filter (\p → head p.moves != head pv.moves) gs.best    
+                            let best = pvs ++ filter (
+                                    \p → head p.moves `notElem` map (head . _.moves) pvs) gs.best    
                             if continue 
                                 then protocol strategy gs.{best}
                                 else sendMove gs.{best} >>= protocol strategy
@@ -316,9 +318,17 @@ xboardCommand command gs = do
     stdout.flush
     gs.rvar.put  (command !~ '^\s*quit\b') 
     case command of
-        '^\s*(accepted|rejected|xboard|random|cores|hard|easy|post)\b'    
+        '^\s*(accepted|rejected|xboard|random|hard|easy|post)\b'    
                             → pure gs
+        m~'^\s*cores\s+(\d+)' → case m.group 1 of
+                                    Just c → do
+                                        println ("# setting cores to " ++ show (atoi c)) 
+                                        pure gs.{cores = atoi c}
+                                    Nothing → do
+                                        println ("# cannot set cores???") >> stdout.flush 
+                                        pure gs
         '^\s*protover '     → do
+            println ("feature name=\"frech " ++ gs.name ++ "\"")
             println ("feature ping=0 setboard=1 playother=1 usermove=1 draw=0 "
                         ++ "sigint=0 analyze=0 variants=\"normal\" colors=0 nps=0 "
                         ++ "debug=1 memory=0 smp=1 "
