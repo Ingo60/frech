@@ -1,6 +1,8 @@
 --- Basic data structures for the Chess engine
 module frech.Daten
-    inline (Position.figures, decodeFigure, member, singleton, whatIsOn, bitIndex, card) where
+    inline (Position.figures, decodeFigure, member, singleton, whatIsOn, bitIndex, card, 
+            Position.turn, boolMask,
+            Player.factor, Player.opponent) where
 
 import Data.Bits
 import Data.Bits public (BitSet.union union, 
@@ -73,55 +75,9 @@ instance Enum Index
 
 instance Show Index where
     show n = String.format "%c%d" n.file n.rank :: String
-        
---- gives the bit number of the lowest bit
-pure native lowestBit java.lang.Long.numberOfTrailingZeros :: Fields -> Int
-
---- give the 'Index' of the lowest bit. The 'Fields' set must not be empty!
-bitIndex :: Fields → Index
-bitIndex = Index.unsafeFrom . lowestBit
-
---- make a singleton 'Fields' set
-singleton :: Index -> Fields
-singleton x = BitSet (1L `shiftL` ord x)
-
---- is some 'Index' member of a 'Fields' set?
-member :: Index -> Fields -> Bool
-member i s = ((1L `shiftL` ord i) .&. BitSet.set s) != 0
 
 --- A bit set for sets of fields
 type Fields = BitSet Index
-
-allFields = BitSet (-1L) :: Fields
-
---- How many elements in this set?
-card ∷ BitSet α → Int
-card f = popCount (BitSet.set f)
-
---- The players taking part in the game
-data Player = BLACK | WHITE where
-    pure native (==) "=="     :: Player -> Player -> Bool
-    pure native (!=) "!="     :: Player -> Player -> Bool
-    pure native hashCode "(short)" :: Player -> Int
-    
-    opponent BLACK = WHITE
-    opponent WHITE = BLACK
--- instance Eq Player
--- deriving Ord Player
-deriving Enum Player
-deriving Show Player
-
---- The shade of fields
-data Shade = LIGHT | DARK
-instance Show Shade where
-    show LIGHT = "░"
-    show DARK  = "▒"
-    
-indexShade ∷ Index → Shade
-indexShade n = if even row == even col then DARK else LIGHT 
-    where
-        row = ord n `shiftR` 3
-        col = ord n .&. 7
 
 {--
     A position contains information about all figures on the board,
@@ -133,14 +89,24 @@ indexShade n = if even row == even col then DARK else LIGHT
 data Position = P {
     {--
         Encodes castling, en passant position and who's turn it is.
+        In addition, whether the kings actually did castle, the 50-moves-rule ply counter
+        and the distance to root ply counter.
         
+        - If A1 is in the set, it is 'WHITE's turn, otherwise 'BLACK's.
         - If en passant is possible, one of  A3..H3 or A6..H6 is in the set
         - If castling is possible, the corresponding target fields of the Kings
-        are in the set. This would be G1 (white kingside), C1 (white queenside),
-        G8 (black kingside) or C8 (black queenside).
+          are in the set. This would be G1 (white kingside), C1 (white queenside),
+          G8 (black kingside) or C8 (black queenside).
         - If castling actually was performed, F1, D1, F8 or G8 are set (the field
-          that the 'KING' skipped.
-        - If A1 is in the set, it is 'WHITE's turn, otherwise 'BLACK's.     
+          that the 'KING' skipped).
+        - The bits 'A4' .. 'H4' contain the unsigned half-move counter. It is reset to 0
+          on a 'PAWN' move or a capturing move. For all other moves, it is incremented.
+        - The bits 'A5' .. 'H5' contain the unsigned root-move counter. It is incremented with
+          every move, but reset to 0 after a usermove was carried out. Hence, in searches,
+          one can see how many levels deep in the search we are (distance to root), while the
+          "depth" parameter of said search functions gives the distance to the horizon.
+        
+        Note: the counter bits and the F1, D1, F8 and G8 bits are not reflected in the hash key.      
     -}
     !flags   ::  Fields,
     --- Tells the fields that are occupied by white figures
@@ -160,16 +126,20 @@ data Position = P {
     
     --}
     !pawnSet, !bishopSet, !rookSet :: Fields,
+    {--
+        The Zobrist hash key.
+    -}
+    !hash :: Long
   } where
     --- Equality of bitmasks up to ply counter
     (==) :: Position → Position → Bool
-    p1 == p2 = p1.flags `diff` plyCounterBits BitSet.== p2.flags `diff` plyCounterBits
+    p1 == p2 = p1.flags `diff` counterBits BitSet.== p2.flags `diff` counterBits
             && p1.whites    BitSet.== p2.whites
             && p1.pawnSet   BitSet.== p2.pawnSet
             && p1.bishopSet BitSet.== p2.bishopSet
             && p1.rookSet   BitSet.== p2.rookSet
     --- 0 for now
-    hashCode p = BitSet.hashCode (p.flags `diff`  plyCounterBits)
+    hashCode p = p.hash.hashCode
     
     --- Tell the fields occupied by 'PAWN's
     --- 'PAWN's have a bit in 'Position.pawnSet' only.
@@ -219,20 +189,53 @@ data Position = P {
             enPassantBlackPawn = [A6 .. H6]
             enPassantWhitePawn = [A3 .. H3]
     
-    --- Constant bitmask for selection of the ply counter
-    --- This can be used to implement the 50 moves rule
-    !plyCounterBits = BitSet.fromList [A4 .. H5]
+    --- constant bitmask for selection of the ply counter
+    --- This is used to implement the 50 moves rule
+    --- Note that we have room for 256 plies, but only 100 are needed
+    !plyCounterBits = BitSet.fromList [A4 .. H4]
+    !plyCounterShift = 24
     
+    --- constant bitmask for selection of the distance to root ply counter
+    --- This counter is reset to 0 before a search starts and incremented with every move
+    !rootCounterBits = BitSet.fromList [A5 .. H5]
+    !rootCounterShift = 32
+    
+    !counterBits = plyCounterBits `union` rootCounterBits
+    
+    --- constant to add or subtract one from both counters in one go
+    --- It goes without saying that we must never decrement beyond zero, nor increment beyond 255.
+    !onePly = singleton A4 `union` singleton A5
+    --- This is used when only the root counter must be incremented (on 'PAWN' moves and captures)
+    !onePlyRoot = singleton A5 
+        
     --- get the number of 'Move's applied since tha last pawn move or capture
     --- (Castling, despite technically doing 3 moves, corrects the counter acordngly)
-    getPlyCounter p = (flags p `inter` plyCounterBits).set `shiftR` 24
-    
-    --- set the ply counter 
-    setPlyCounter p n =  p.{flags =       (flags p `diff` plyCounterBits) 
-                                `union` (BitSet (n `shiftL` 24) `inter` plyCounterBits)}
+    getPlyCounter p = (flags p `inter` plyCounterBits).set `shiftR` plyCounterShift
 
+    getRootDistance :: Position → Long
+    getRootDistance p = (p.flags `inter` rootCounterBits).set `shiftR` rootCounterShift
+            
+    --- clear the 50-move ply counter
+    clearPlyCounter :: Position -> Position
+    clearPlyCounter pos = pos.{flags = pos.flags `diff` plyCounterBits} 
+    
+    --- clear the root ply counter
+    clearRootPlyCounter :: Position → Position
+    clearRootPlyCounter pos = pos.{flags = pos.flags `diff` rootCounterBits}
+
+    --- Increment the ply counter(s) using either 'Position.onePly' or 'Position.onePlyRoot'
+    incrPlyCounters :: Position → Fields → Position 
+    incrPlyCounters pos mask = pos.{flags = BitSet (BitSet.set pos.flags + BitSet.set mask)}
+
+    --- Decrement both ply counters
+    --- Note: it will never be necessary to decrement only one counter. 
+    --- Only used after castling, where we actually do 3 ordinary (but illegal) moves.  
+    decrPlyCounters :: Position → Position 
+    decrPlyCounters pos = pos.{flags = BitSet (BitSet.set pos.flags - BitSet.set onePly)} 
+ 
     --- subtract 2 from the plyCounter (conveniece for castlings)
-    correctPlyCounterForCastling p = setPlyCounter p (getPlyCounter p - 2)
+    correctPlyCounterForCastling ∷ Position → Position
+    correctPlyCounterForCastling p = decrPlyCounters (decrPlyCounters p) 
     
     --- tell if an index is empty 
     empty p index = not (index `member` figures p)
@@ -240,8 +243,10 @@ data Position = P {
     --- tell if all members of the set are empty
     allEmpty p fields = null (fields `inter` figures p)  
 
-    --- tell who's turn it is    
-    turn p = if A1 `member` Position.flags p then WHITE else BLACK
+    --- tell who's turn it is
+    turn :: Position → Player    
+    turn p = -- if A1 `member` Position.flags p then WHITE else BLACK
+                from (BitSet.set p.flags .&. 1).int
     
     --- all figures
     figures :: Position → Fields
@@ -257,9 +262,32 @@ data Position = P {
         BLACK → blackFigures pos
     --- figures of the player whose turn it is
     activeFigures p = playerFigures p (turn p)
-
-instance Eq Position
     
+    --- what is on some index, if any
+    on :: Position → Fields → Piece
+    on p ix = 
+        if (ix `inter` p.pawnSet) BitSet.== ix
+            then if (ix `inter` p.bishopSet) BitSet.== ix
+                    then if (ix `inter` p.rookSet) BitSet.== ix then EMPTY else KNIGHT
+                    else if (ix `inter` p.rookSet) BitSet.== ix then KING  else PAWN 
+            else if (ix `inter` p.bishopSet) BitSet.== ix
+                    then if (ix `inter` p.rookSet) BitSet.== ix then QUEEN else BISHOP
+                    else if (ix `inter` p.rookSet) BitSet.== ix then ROOK  else EMPTY
+
+    --- Compute the hash field
+    --- Done only once, and updated with every move
+    zobrist :: Position → Long
+    zobrist p = foldIndexes zPiece flagz p.figures
+        where 
+            cond c  = if c `member` p.flags then flagZobrist c else 0L
+            flagz = cond A1 .^. cond G1 .^. cond C1 .^. cond G8 .^. cond C8
+                .^. cond A3 .^. cond B3 .^. cond C3 .^. cond D3 .^. cond E3 .^. cond F3 .^. cond G3 .^. cond H3
+                .^. cond A6 .^. cond B6 .^. cond C6 .^. cond D6 .^. cond E6 .^. cond F6 .^. cond G6 .^. cond H6
+            zPiece ix acc = acc .^. ppfZobrist fi.player fi.piece ix
+                where fi = whatIsOn p ix 
+    rehash :: Position → Position
+    rehash p = p.{hash=p.zobrist}
+instance Eq Position
 deriving Show Position
 
 data Piece = EMPTY | PAWN | KNIGHT | BISHOP | ROOK | QUEEN | KING where
@@ -307,6 +335,65 @@ data Move = M {!player ∷ Player, !piece, !promote ∷ Piece, !from, !to ∷ In
     hashCode m = ((m.player.hashCode * 31 + m.piece.hashCode) * 31 + m.from.hashCode) * 31 + m.to.hashCode
 instance Eq Move
 deriving Show Move
+
+--- The players taking part in the game
+data Player = BLACK | WHITE where
+    pure native (==) "=="     :: Player -> Player -> Bool
+    pure native (!=) "!="     :: Player -> Player -> Bool
+    pure native hashCode "(int)"    :: Player -> Int
+    pure native ordNum   "(int)"    :: Player -> Int
+    pure native unsafeFrom "(short)":: Int -> Player
+    
+    opponent :: Player -> Player
+    opponent p = unsafeFrom (ordNum p .^. 1)
+
+    --- Gives (-1) for 'BLACK' and 1 for 'WHITE' without conditional branching
+    --- It is so that ord BLACK is 0, multiplied by 2 is still 0 and 1 subtracted gives -1
+    --- Whereas ord WHITE is 1, multiplied by 2 is 2 and 1 subtracted gives 1
+    --- (And 'ord' on enumerations is basically a no-op.)
+    factor :: Player -> Int
+    factor p = 2 * ordNum p - 1
+ 
+-- instance Eq Player
+-- deriving Ord Player
+deriving Enum Player
+deriving Show Player
+
+--- The shade of fields
+data Shade = LIGHT | DARK
+instance Show Shade where
+    show LIGHT = "░"
+    show DARK  = "▒"
+
+        
+--- gives the bit number of the lowest bit
+pure native lowestBit java.lang.Long.numberOfTrailingZeros :: Fields -> Int
+
+--- give the 'Index' of the lowest bit. The 'Fields' set must not be empty!
+bitIndex :: Fields → Index
+bitIndex = Index.unsafeFrom . lowestBit
+
+--- make a singleton 'Fields' set
+singleton :: Index -> Fields
+singleton x = BitSet (1L `shiftL` ord x)
+
+--- is some 'Index' member of a 'Fields' set?
+member :: Index -> Fields -> Bool
+member i s = ((1L `shiftL` ord i) .&. BitSet.set s) != 0
+
+allFields = BitSet (-1L) :: Fields
+
+--- How many elements in this set?
+card ∷ BitSet α → Int
+card f = popCount (BitSet.set f)
+
+    
+indexShade ∷ Index → Shade
+indexShade n = if even row == even col then DARK else LIGHT 
+    where
+        row = ord n `shiftR` 3
+        col = ord n .&. 7
+
 
 --- show 'Move' in algebraic notation
 algebraic :: Move → String
@@ -576,9 +663,11 @@ whatIsOn p = whatIs p . singleton
 --- Place a 'Player's 'Piece' on a certain field or many fields at once.
 --- If there is something on the target field(s), it will be removed.
 --- It is possible to place 'EMPTY', in this case, 'Player' will be ignored.
-place ∷ Player → Piece → Fields → Position → Position
-place !player !piece !mask !p = P{flags, whites, pawnSet, bishopSet, rookSet}
-    where 
+--- Not for public use, as it leaves a wrong hash
+protected place ∷ Player → Piece → Fields → Position → Position
+protected place !player !piece !mask !p = P{flags, whites, pawnSet, bishopSet, rookSet, hash}
+    where
+        hash   = p.hash 
         flags  = Position.flags p
         whites = if player == WHITE && piece != EMPTY 
                     then p.whites `union` mask 
@@ -652,11 +741,23 @@ applyMove !p !m
     | otherwise = ordinary m p
     where
         ordinary ∷ Move → Position → Position
-        ordinary m p = P{flags, whites, pawnSet, bishopSet, rookSet} where
+        ordinary m p = P{flags, whites, pawnSet, bishopSet, rookSet, hash} where
             flags = tomove  `union` castlingRights
-                            -- `union` hasCastledInfo
+                            `union` hasCastledInfo
                             `union` enPassantBits 
-                            `union` plies
+                            `union` plies 
+            !hash = p.hash 
+                    .^. flagZobrist A1    -- switch turn
+                    .^. (boolMask (C1 `member` (p.flags `inter` lostCastlingRights)) .&. flagZobrist C1)
+                    .^. (boolMask (G1 `member` (p.flags `inter` lostCastlingRights)) .&. flagZobrist G1)
+                    .^. (boolMask (C8 `member` (p.flags `inter` lostCastlingRights)) .&. flagZobrist C8)
+                    .^. (boolMask (G8 `member` (p.flags `inter` lostCastlingRights)) .&. flagZobrist G8)
+                    .^. (boolMask (not (null currentEP))     .&. flagZobrist (bitIndex currentEP))
+                    .^. (boolMask (not (null enPassantBits)) .&. flagZobrist (bitIndex enPassantBits))
+                    .^. fromHash
+                    .^. ppfZobrist m.player piece m.to
+                    .^. toHash
+            !currentEP = p.flags `inter` Position.enPassantBits
             -- alternate player to move
             tomove = if p.turn == WHITE then blackToMove else whiteToMove
             -- if the moving piece is the KING, the castling rights of the moving player are nullified.
@@ -666,35 +767,34 @@ applyMove !p !m
             -- Note 1: In 1. a4 a5 2. b4 b5 3. axb5 axb4 4. Ra8 both long castling rights get lost!
             -- Note 2: Theoretically it is possible, that a KING captures an unmoved ROOK thus we must
             -- check both KING moves and moves to or from edges!
-            castlingRights = (p.flags `inter` Position.castlingBits) 
-                            `diff` kingMoveLostCastlingRights
-                            `diff` rookMoveLostCastlingRights 
-                            `diff` rookCaptureLostCastlingRights
-
-            kingMoveLostCastlingRights = if m.piece == KING
+            !castlingRights = (p.flags `inter` Position.castlingBits) 
+                            `diff` lostCastlingRights
+            -- LCR means "lost castling rights"
+            !lostCastlingRights = kingMoveLCR `union` rookMoveLCR `union` rookCaptureLCR 
+            kingMoveLCR = if m.piece == KING
                                             then if m.player == WHITE
                                                 then  whiteCastlingRights
                                                 else  blackCastlingRights
                                             else empty 
-            rookMoveLostCastlingRights = if m.from == A8 then singleton C8
+            rookMoveLCR = if m.from == A8 then singleton C8
                                             else if m.from == H8 then singleton G8
                                             else if m.from == A1 then singleton C1
                                             else if m.from == H1 then singleton G1
                                             else empty
-            rookCaptureLostCastlingRights = if m.to == A8 then singleton C8
+            rookCaptureLCR = if m.to == A8 then singleton C8
                                             else if m.to == H8 then singleton G8
                                             else if m.to == A1 then singleton C1
                                             else if m.to == H1 then singleton G1
                                             else empty
-            --hasCastledInfo = if m.piece == KING 
-            --    then if m.player == WHITE
-            --        then     if m.from == E1 && m.to == G1 then singleton F1
-            --            else if m.from == E1 && m.to == C1 then singleton D1 else empty
-            --        else     if m.from == E8 && m.to == G8 then singleton F8
-            --        else     if m.from == E8 && m.to == C8 then singleton D8 else empty
-            --    else empty
+            !hasCastledInfo = if m.piece == KING 
+                then if m.player == WHITE
+                    then     if m.from == E1 && m.to == G1 then singleton F1
+                        else if m.from == E1 && m.to == C1 then singleton D1 else empty
+                    else     if m.from == E8 && m.to == G8 then singleton F8
+                    else     if m.from == E8 && m.to == C8 then singleton D8 else empty
+                else empty
                 
-            enPassantBits = if m.piece == PAWN
+            !enPassantBits = if m.piece == PAWN
                 then if m.player == WHITE
                     then if ord m.to == ord m.from + 16
                         then singleton (from (ord m.from + 8))
@@ -704,27 +804,38 @@ applyMove !p !m
                         else empty
                 else empty
             -- increment number of plies, unless it's a capture or PAWN move
-            plies = if m.piece == PAWN || not (p.empty m.to)
-                    then empty
-                    else BitSet ((p.getPlyCounter + 1) `shiftL` 24) `inter` Position.plyCounterBits
+            !plies = if m.piece == PAWN || not (p.empty m.to)
+                    then BitSet ((p.flags `inter` Position.counterBits).set + Position.onePlyRoot.set) 
+                    else BitSet ((p.flags `inter` Position.counterBits).set + Position.onePly.set)
             -- fields that will be empty after the move
             !fromMask = if m.promote == PAWN -- en passant capture
                         then if m.player == WHITE 
                             then singleton m.from `union` singleton (from (ord m.to - 8))
                             else singleton m.from `union` singleton (from (ord m.to + 8))
                         else singleton m.from
+            -- this must be xor'ed out from the hash
+            !fromHash = ppfZobrist m.player m.piece m.from      -- the piece from the "from" square
+                            .^.  if m.promote == PAWN -- en passant capture
+                                    then    -- remove opponents PAWN 
+                                        ppfZobrist m.player.opponent PAWN 
+                                                            (if m.player == WHITE 
+                                                                    then from (ord m.to - 8)
+                                                                    else from (ord m.to + 8))
+                                    else 0
             -- field that will be set after the move
             !toMask = singleton m.to
+            !toHash = if p.empty m.to then 0
+                        else ppfZobrist  m.player.opponent  (p.on (singleton m.to))  m.to 
             !piece  = if m.piece == PAWN && m.promote >= KNIGHT then m.promote else m.piece 
-            whites = if m.player == WHITE then (p.whites `diff` fromMask) `union` toMask 
+            !whites = if m.player == WHITE then (p.whites `diff` fromMask) `union` toMask 
                         else  p.whites `diff` (fromMask `union` toMask) 
-            pawnSet = if piece == PAWN || piece == KING || piece == KNIGHT
+            !pawnSet = if piece == PAWN || piece == KING || piece == KNIGHT
                         then (p.pawnSet `diff` fromMask) `union` toMask
                         else p.pawnSet `diff` (fromMask  `union` toMask)
-            bishopSet = if piece == BISHOP || piece == QUEEN || piece == KNIGHT
+            !bishopSet = if piece == BISHOP || piece == QUEEN || piece == KNIGHT
                         then (p.bishopSet `diff` fromMask) `union` toMask
                         else p.bishopSet `diff`  (fromMask  `union` toMask)
-            rookSet = if piece == ROOK  || piece == QUEEN || piece == KING
+            !rookSet = if piece == ROOK  || piece == QUEEN || piece == KING
                         then (p.rookSet `diff` fromMask) `union` toMask
                         else p.rookSet `diff`  (fromMask  `union` toMask)
         castling ∷ Move → Position → Position
@@ -735,6 +846,36 @@ applyMove !p !m
                         else if m.promote == KING 
                             then (blackShortCastling p).{flags ← union (singleton F8)} 
                             else (blackLongCastling p) .{flags ← union (singleton D8)} 
+
+
+pure native bcomp "java.lang.Boolean.compare" :: Bool → Bool → Int
+
+--- branchless equivalent to
+--- > if null set then 0L else -1L
+boolMask = Int.long . bcomp false
+
+--- set the "stop thinking" flag to *true*
+native finishThinking frech.MDB.finishThinking ∷ () → IO ()
+
+--- set the "stop thinking" flag to *false*
+native beginThinking frech.MDB.beginThinking ∷ () → IO ()
+
+{-- 
+    The stop thinking flag.
+
+    Apologies for cheating with IO here. But it doesn't change anything, except that searches
+    will end with the next iteration. It did work without this flag very well, except that when 2
+    engines play against each other, it may take a few seconds before a timed out search actually
+    finishes. And this steals massive amounts of computing ressources from the opponent, while his
+    clock is running, which distorts the picture.
+-}
+pure native stopThinking frech.MDB.stopThinking ∷ Bool 
+
+--- Zobrist hash constants for 'Player', 'Piece' and 'Field'
+pure native ppfZobrist frech.MDB.ppfZobrist ∷ Player → Piece → Index → Long
+
+--- Zobrist hash constants for 'Position.flags' indexes
+pure native flagZobrist frech.MDB.flagZobrist ∷ Index → Long
 
 --- The set of fields a 'WHITE' 'PAWN' on some 'Index' can go potentially
 pure native whitePawnTargets    frech.MDB.whitePawnTargets ∷ Index → Fields
@@ -840,8 +981,9 @@ validRookTargets p from mask = go p from (mask `inter` rookTargets from) empty
                 !m  = singleton to    
 
 
-!emptyBoard = (P empty empty empty empty empty)
-!initialBoard = Position.{flags = singleton A1 `union` Position.castlingBits} 
+!emptyBoard = (P empty empty empty empty empty 0L)
+!initialBoard = Position.rehash
+               . Position.{flags = singleton A1 `union` Position.castlingBits} 
                . place WHITE PAWN (BitSet.fromList [A2, B2, C2, D2, E2, F2, G2, H2])
                . place BLACK PAWN (BitSet.fromList [A7, B7, C7, D7, E7, F7, G7, H7])
                . place WHITE KING (singleton E1)

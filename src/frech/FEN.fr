@@ -57,12 +57,14 @@ import frech.Daten
 --- the order of the fields as they appear in FEN
 fenOrder = join [[A8…H8], [A7…H7], [A6…H6], [A5…H5], [A4…H4], [A3…H3], [A2…H2], [A1…H1]]
 
+decodeFEN ∷ String → (String | Position)
 decodeFEN fen = case '\s+'.splitted fen of
         [fen1,fen2,fen3,fen4,fen5,fen6] -> 
             decodePlacement fenOrder (unpacked fen1) emptyBoard
             >>= decodePlayer fen2
             >>= decodeCastling (unpacked fen3)
             >>= decodeEP fen4
+            >>= pure . Position.rehash
         _ -> Left "Invalid FEN: must be 6 space separated fields"
     where
         decodeCastling ['-'] p  = pure p
@@ -91,18 +93,18 @@ decodeFEN fen = case '\s+'.splitted fen of
         decodePlacement  (i:is) (c:cs)       p
             | c > '0' && c < '9' = decodePlacement (drop (ord c - ord '1') is) cs p
             | otherwise = case c of
-                'K' -> decodePlacement is cs (place WHITE KING wo p)
-                'Q' -> decodePlacement is cs (place WHITE QUEEN wo p)
-                'R' -> decodePlacement is cs (place WHITE ROOK wo p)
-                'B' -> decodePlacement is cs (place WHITE BISHOP wo p)
-                'N' -> decodePlacement is cs (place WHITE KNIGHT wo p)
-                'P' -> decodePlacement is cs (place WHITE PAWN wo p)
-                'k' -> decodePlacement is cs (place BLACK KING wo p)
-                'q' -> decodePlacement is cs (place BLACK QUEEN wo p)
-                'r' -> decodePlacement is cs (place BLACK ROOK wo p)
-                'b' -> decodePlacement is cs (place BLACK BISHOP wo p)
-                'n' -> decodePlacement is cs (place BLACK KNIGHT wo p)
-                'p' -> decodePlacement is cs (place BLACK PAWN wo p)
+                'K' -> decodePlacement is cs (Daten.place WHITE KING wo p)
+                'Q' -> decodePlacement is cs (Daten.place WHITE QUEEN wo p)
+                'R' -> decodePlacement is cs (Daten.place WHITE ROOK wo p)
+                'B' -> decodePlacement is cs (Daten.place WHITE BISHOP wo p)
+                'N' -> decodePlacement is cs (Daten.place WHITE KNIGHT wo p)
+                'P' -> decodePlacement is cs (Daten.place WHITE PAWN wo p)
+                'k' -> decodePlacement is cs (Daten.place BLACK KING wo p)
+                'q' -> decodePlacement is cs (Daten.place BLACK QUEEN wo p)
+                'r' -> decodePlacement is cs (Daten.place BLACK ROOK wo p)
+                'b' -> decodePlacement is cs (Daten.place BLACK BISHOP wo p)
+                'n' -> decodePlacement is cs (Daten.place BLACK KNIGHT wo p)
+                'p' -> decodePlacement is cs (Daten.place BLACK PAWN wo p)
                 '/' | i `elem` [A7, A6, A5, A4, A3, A2, A1] = decodePlacement (i:is) cs p 
                     | otherwise = Left ("Invalid FEN: expected placement for " 
                                     ++ show i ++ ", found '/'")
