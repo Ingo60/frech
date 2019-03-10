@@ -331,7 +331,7 @@ protocol strategy gs  = do
                     when (repetition) do  println "1/2-1/2 {repetition}"
                     stdout.flush
                     -- pong gs.pings
-                    pure  gs.{history ← (pos:), sid ← succ, expected,
+                    pure  gs.{history ← (pos.clearRootPlyCounter:), sid ← succ, expected,
                                 state = if finished then FORCED else PLAYING,
                                 best  = []}
  
@@ -405,7 +405,7 @@ xboardCommand command gs = do
                     pure gs
               Just mv → do
                     let pos = applyMove p mv
-                        gs' = gs.{history ← (pos:), sid ← succ, expected = Nothing}
+                        gs' = gs.{history ← (pos.clearRootPlyCounter:), sid ← succ, expected = Nothing}
                     --println ("# after " ++ show mv)
                     --println ("# " ++ show (whatIsOn pos mv.from))
                     --println ("# " ++ show (whatIsOn pos mv.to))
