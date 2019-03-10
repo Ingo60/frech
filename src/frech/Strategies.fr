@@ -116,6 +116,9 @@ strategyBest gs  = do
     continue ← gs.talkPV PV{moves=[best], val=0, nodes=1}
     if continue then gs.tellNoMore else pure ()
 
+--- check if higher depth don't give new results 
+theEndIsNear ∷ Int → [Variation] → Bool
+theEndIsNear depth pvs = all (<depth) (map (length . Variation.moves) pvs)
 
 strategyMiniMax :: Strategy
 strategyMiniMax gs  = do
@@ -128,7 +131,9 @@ strategyMiniMax gs  = do
             else tryMoves 2 gs [] allMoves 
     where
         tryMoves ∷ Int →  GameState  → [Variation] → [Move] → IO ()
-        tryMoves depth  gs pvs [] = tryMoves (depth+1)  gs [] (ordered pvs)
+        tryMoves depth  gs pvs [] = if theEndIsNear depth pvs 
+                        then gs.tellNoMore
+                        else tryMoves (depth+1)  gs [] (ordered pvs)
             where ordered pvs = map (head • Variation.moves) sorted
                   sorted = if gs.player == WHITE 
                             then sortBy (descending Variation.val) pvs
@@ -188,13 +193,15 @@ strategyAlphaBeta gs  = do
             else tryMoves 3 whiteIsMate blackIsMate  gs [] allMoves 
     where
         tryMoves ∷ Int → Int → Int → GameState  → [Variation] → [Move] → IO ()
-        tryMoves depth alpha beta gs pvs [] = do
-                gs.tellForget
-                if length goodOnes == 1     -- extraordinary move, like mate
-                then do
-                    cont ← gs.talkPVs goodOnes
-                    if cont then gs.tellNoMore else pure ()
-                else tryMoves (depth+1) whiteIsMate blackIsMate gs [] (varmoves goodOnes)
+        tryMoves depth alpha beta gs pvs [] = if theEndIsNear depth pvs 
+                    then gs.tellNoMore
+                    else do
+                        gs.tellForget
+                        if length goodOnes == 1     -- extraordinary move, like mate
+                        then do
+                            cont ← gs.talkPVs goodOnes
+                            if cont then gs.tellNoMore else pure ()
+                        else tryMoves (depth+1) whiteIsMate blackIsMate gs [] (varmoves goodOnes)
             where
                 !sorted   = if gs.player == WHITE
                     then sortBy (descending Variation.val) pvs

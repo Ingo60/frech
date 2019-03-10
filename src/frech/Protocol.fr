@@ -148,9 +148,11 @@ reader cvar dvar = do
 
 protocol :: Strategy → GameState → IO ()
 protocol strategy gs  = do
- 
+        let (hma, hmb, _) = HashMap.collisions gs.openingMap
         println ("# protocol state=" ++ gs.state.show ++ ", player=" ++ gs.player.show
-                    ++ ". cores=" ++ show gs.cores)
+                    -- ". cores=" ++ show gs.cores
+                    ++ " collision nodes=" ++ show hma
+                    ++ " collision keys=" ++ show hmb)
         stdout.flush
         
         case gs.state of
