@@ -119,10 +119,11 @@ strategyMiniMax gs cin cout = do
 miniMax ∷ [Position] → Int → Move → Variation
 -- miniMax hist 0 m = PV [m] (eval hist (applyMove (head hist) m)) 1 
 miniMax hist n m
-    | null ms              =  let  val = if check 
-                                    then if pos.turn == WHITE then whiteIsMate else blackIsMate
-                                    else 0 
-                                in PV [m] val 1
+    | stopThinking              =  PV [m] 0 1 
+    | null ms                   =  let  val = if check 
+                                        then if pos.turn == WHITE then whiteIsMate else blackIsMate
+                                        else 0 
+                                    in PV [m] val 1
     | pos.getPlyCounter >= 100  = PV [m] 0 1
     | pos `element` hist        = PV [m] 0 1
     | n == 0                    = PV [m] (eval pos) 1
@@ -234,10 +235,11 @@ correctMateDistance pv =   if pv.val == whiteIsMate then pv.{val = pv.val + dist
 
 alphaBeta  ∷ Bool → [Position] → Int → Int → Int → Move → Variation
 alphaBeta extended hist !d !alpha !beta m
-    | null ms              =  let  val = if check 
-                                    then if pos.turn == WHITE then whiteIsMate else blackIsMate
-                                    else 0 
-                               in PV [m] val 1
+    | stopThinking              =  PV [m] 0 1 
+    | null ms                   =  let  val = if check 
+                                            then if pos.turn == WHITE then whiteIsMate else blackIsMate
+                                            else 0 
+                                    in PV [m] val 1
     | pos.getPlyCounter >= 100  = PV [m] 0 1
     | pos `element` hist        = PV [m] 0 1
     | d == 0                    = if targt.piece != EMPTY && not extended  
