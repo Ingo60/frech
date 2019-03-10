@@ -401,6 +401,20 @@ algebraic m = show m.from ++ show m.to ++ p
     where
         p = if m.promote >= KNIGHT && m.piece == PAWN then m.promote.show.toLowerCase else ""
 
+--- read 'Move' from algebraic notation
+--- Result is 'Nothing' if either the string isn't correct or there is no corresponding move in the list 
+unAlgebraic ∷ [Move] → String → Maybe Move
+unAlgebraic ms (m~'([a-h][1-8])([a-h][1-8])([nbrq]?)') = listToMaybe (filter corresponding ms)
+    where
+        from = m.group 1 >>= Index.read
+        to   = m.group 2 >>= Index.read 
+        prom = case maybe "" String.toUpperCase (m.group 3) of
+                "" -> "-"
+                x  -> x
+        corresponding ∷ Move → Bool
+        corresponding move = Just move.from == from && Just move.to == to &&
+            (move.piece != PAWN && prom == "-" || prom == show move.promote) 
+unAlgebraic invalid garbage = Nothing
 --- List of possible 'Moves' in a given 'Position'. 
 --- The moves may still turn out illegal due to check.
 rawMoves   ∷ Position → [Move]
