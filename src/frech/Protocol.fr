@@ -6,9 +6,11 @@ import Control.Concurrent(MVar, forkIO, forkOS)
 import System.Random(randomIO)
 import Data.List(sortBy)
 import Data.Bits(.^.)
+import Data.HashMap as HM(HashMap)
 
 import frech.Daten
-import frech.FEN(decodeFEN)
+import frech.FEN(decodeFEN, encodeFEN)
+import frech.Eval(opening)
 
 data Variation = PV { !moves :: [Move], !val :: Int, !nodes :: Int}
 instance Ord Variation where
@@ -47,7 +49,7 @@ type Clock   = Long
 data State = FORCED | PLAYING | THINKING Clock | TERMINATED
 derive Show State
 
-type Strategy = GameState -> MVar Command -> MVar Input -> IO ()
+type Strategy = GameState -> MVar Command -> MVar Input → IO ()
 
 data TimeControl = TC {
         !myTime, !oTime ∷ Clock         --- My remaining time and her remaining time in milliseconds
@@ -65,7 +67,9 @@ data GameState = GS {
                                         'Position' received through "setboard".
                                         
                                          This list is shortened only on xboard "undo" commands.
-                                         The implementation will refuse to undo the initial 'Position'. -} 
+                                         The implementation will refuse to undo the initial 'Position'. -}
+        !expected :: Maybe Move     --- The 'Move' we expect the opponent to make
+        !openingMap :: HashMap Position [Move]    --- moves to expect in the opening   
         !state :: State              {-- 
                                         Are we in force mode, playing or thinking?
                                         In 'THINKING' a strategy task will be active. -}      
@@ -98,9 +102,8 @@ data GameState = GS {
                                         only input with an id that matches this 'GameState's sid
                                         is regarded as valid.
                                     -}
-        !pings      :: [Int]            --- Ping numbers received during thinking are saved here.
         !best, !backup  :: [Variation]  --- Moves reported so far, and backup
-        !myTime, !oTime ∷ Clock         --- My remaining time and her remaining time in milliseconds
+        !tc             ∷  TimeControl  ---- Information for time control
         !cores          ∷ Int           --- # of cores we're allowed to use
     } 
     where 
@@ -108,8 +111,16 @@ data GameState = GS {
         --- Time per move in milliseconds
         --- This is just enough to make approximate 10 more moves, however, 
         timePerMove ∷ GameState → Long
-        timePerMove gs = max 0 (gs.myTime - gs.oTime) `quot` 3          -- we are ahead in time 
-                        + max 1000 (gs.myTime `quot` 20)                -- 1 second or enough to play 20 moves 
+        timePerMove gs = max 0 (gs.tc.myTime - gs.tc.oTime) `quot` 3          -- we are ahead in time 
+                        + max 1000 (gs.tc.myTime `quot` 20)                -- 1 second or enough to play 20 moves
+        --- tell the driver something without expecting an answer
+        tellDriver :: GameState -> Input -> IO ()
+        tellDriver gs inp = gs.ivar.put inp 
+        --- tell the driver something and get the answer
+        talkDriver :: GameState -> Input -> IO Command
+        talkDriver gs inp = do 
+            gs.ivar.put inp
+            gs.tvar.take 
 
 
 
@@ -162,7 +173,7 @@ protocol strategy gs  = do
                     Just EOF → do
                         println "# EOF on standard input while thinking!?" >> stdout.flush
                         gs.tvar.offer false 
-                        pong gs.pings
+                        -- pong gs.pings
                         pure ()
                     Just (Forget sid)
                         | sid == gs.sid = do
@@ -215,14 +226,15 @@ protocol strategy gs  = do
                         case xboard of
                             m~'^\s*ping\s+(\d+)' → do
                                 let p = maybe [] (pure . String.atoi) (m.group 1) 
-                                protocol strategy gs.{pings <- (p++)}
+                                -- protocol strategy gs.{pings <- (p++)}
+                                protocol strategy gs
                             '^\s*(force|result)\b' → do
                                 gs.tvar.offer false 
-                                pong gs.pings
+                                -- pong gs.pings
                                 protocol strategy gs.{state=FORCED, best=[], backup=[]}
                             '^\s*new\b' → do
                                 gs.tvar.offer false 
-                                pong gs.pings
+                                -- pong gs.pings
                                 protocol strategy gs.{history=[initialBoard], best=[], backup=[],
                                                      state=PLAYING, player=BLACK}
                             "?" → sendMove gs >>= protocol strategy
@@ -275,8 +287,8 @@ protocol strategy gs  = do
                             println "# strategy busy, but no move found yet"
                             println "resign"
                             stdout.flush
-                            pong gs.pings
-                            pure gs.{state=FORCED, pings=[]}
+                            -- pong gs.pings
+                            pure gs.{state=FORCED}
                 variations → do
                     coin ← randomIO
                     let spv = if gs.player == WHITE then sortBy (descending _.val) variations 
@@ -285,6 +297,7 @@ protocol strategy gs  = do
                                 (pv1:pv2:_) → if coin && abs (pv1.val - pv2.val) < 6 then pv2 else pv1
                                 single -> head spv
                         m = head pv.moves
+                        expected = if length pv.moves > 1 then Just $! head (tail pv.moves) else Nothing
                         pos = applyMove gs.current m
                         ms  = moves pos
                         mate = null ms && inCheck pos pos.turn
@@ -309,8 +322,8 @@ protocol strategy gs  = do
                     when (moves50)    do  println "1/2-1/2 {50 moves}"
                     when (repetition) do  println "1/2-1/2 {repetition}"
                     stdout.flush
-                    pong gs.pings
-                    pure  gs.{history ← (pos:), pings = [], sid ← succ,
+                    -- pong gs.pings
+                    pure  gs.{history ← (pos:), sid ← succ, expected,
                                 state = if finished then FORCED else PLAYING,
                                 best  = []}
  
@@ -347,7 +360,7 @@ xboardCommand command gs = do
                                         println ("# cannot set cores???") >> stdout.flush 
                                         pure gs
         '^\s*protover '     → do
-            println ("feature name=\"frech " ++ gs.name ++ "\"")
+            println ("feature myname=\"frech " ++ gs.name ++ "\"")
             println ("feature ping=0 setboard=1 playother=1 usermove=1 draw=0 "
                         ++ "sigint=0 analyze=0 variants=\"normal\" colors=0 nps=0 "
                         ++ "debug=1 memory=0 smp=1 "
@@ -370,36 +383,42 @@ xboardCommand command gs = do
                 Right p → do
                     pure gs.{history=[p], state=FORCED, best=[]}
         -- user makes a move
-        m~'^\s*usermove ([a-h][1-8])([a-h][1-8])([nbrq]?)\b' → do
+        '^\s*usermove\s+\w+\b' → do
             println "# in usermove"
             stdout.flush
             let p    = head gs.history
-                from = m.group 1
-                to   = m.group 2
-                prom = m.group 3
-                ms = case (from >>= Index.read, to >>= Index.read, fmap _.toUpperCase prom) of
-                    (Just fr, Just t, Just nbrq) 
-                        -> filter (\(m::Move) -> m.from == fr 
-                                && m.to == t 
-                                && (m.promote < KNIGHT && nbrq == "" 
-                                    || show m.promote == nbrq
-                                    || m.piece == KING)) (moves p)
-                    _ -> []
-            if null ms
-                then do
-                    println ("Illegal move: " ++ command.replaceFirst 'usermove ' "")
-                    mapM_  (println . ("# " ++) . algebraic) (moves p)
+                alg  = command.replaceFirst '^\s*usermove\s+' ""
+                valid = moves p
+            case unAlgebraic valid alg of
+              Nothing → do
+                    println ("Illegal move: '" ++ alg ++ "'")
+                    println ("# valid moves in this position: " ++ joined " " (map algebraic valid)) 
                     stdout.flush
                     pure gs
-                else do
-                    let mv  = head ms
-                        pos = applyMove p mv
-                        gs' = gs.{history ← (pos:), sid ← succ}
+              Just mv → do
+                    let pos = applyMove p mv
+                        gs' = gs.{history ← (pos:), sid ← succ, expected = Nothing}
                     --println ("# after " ++ show mv)
                     --println ("# " ++ show (whatIsOn pos mv.from))
                     --println ("# " ++ show (whatIsOn pos mv.to))
                     checkApplyMove p mv pos
-                    pure gs'
+                    case gs.expected of 
+                        Nothing     → pure gs'
+                        Just m 
+                          | m == mv = pure gs'
+                          | not (opening p) = pure gs'
+                          | otherwise = case HM.lookup p gs.openingMap of
+                            Just ems 
+                              | mv `notElem` ems →   do 
+                                appendFile ("data/opening-" ++ (show gs.player).toLowerCase)
+                                    (algebraic mv ++ " " ++ encodeFEN p ++ "\n")
+                                pure gs'.{openingMap ← HM.insert p (mv:ems)}
+                              | otherwise = pure gs'    -- we know this one already
+                            Nothing → do
+                                appendFile ("data/opening-" ++ (show gs.player).toLowerCase)
+                                    (algebraic mv ++ " " ++ encodeFEN p ++ "\n")
+                                pure gs'.{openingMap ← HM.insert p [mv]}                         
+
         -- result 
         '^\s*result ' -> pure gs.{state=FORCED}
         -- undo moves
@@ -407,8 +426,8 @@ xboardCommand command gs = do
         '^\s*remove\b'  → pure gs.{history ← tail . tail} -- assuming xboard knows what it does
         -- time control 
         '^\s*(level|st|sd|nps)\b' → pure gs
-        '^\s*time\s+\d+' → pure gs.{myTime = 10 * (command.replaceFirst '^\s*time\s+' "").atol}
-        '^\s*otim\s+\d+' → pure gs.{oTime  = 10 * (command.replaceFirst '^\s*otim\s+' "").atol}
+        '^\s*time\s+\d+' → pure gs.{tc = gs.tc.{myTime = 10 * (command.replaceFirst '^\s*time\s+' "").atol}}
+        '^\s*otim\s+\d+' → pure gs.{tc = gs.tc.{oTime  = 10 * (command.replaceFirst '^\s*otim\s+' "").atol}}
         
         other                   → do
             println ("Error (unknown command): " ++ command)

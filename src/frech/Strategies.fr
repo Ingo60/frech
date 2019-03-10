@@ -3,11 +3,13 @@ module frech.Strategies where
 
 import frege.control.Concurrent(forkOS, MVar)
 import Data.List(sortBy, maximumBy, minimumBy)
+import Data.HashMap as HM(lookup, insert, HashMap)
 import Lib.ForkJoin
 
 import frech.Protocol
 import frech.Eval
 import frech.Daten
+import frech.FEN(decodeFEN)
 
 -- type Strategy = GameState -> MVar Command -> MVar Input -> IO ()
 
@@ -17,7 +19,9 @@ initialGS = do
     tvar ← MVar.newEmpty
     ivar ← MVar.newEmpty
     pure GS{history=[initialBoard], state=FORCED, player=BLACK, cores=2, name="unknown", 
-            rvar, tvar, ivar, sid=0, pings=[], best=[], backup=[], myTime=60000, oTime = 60000} 
+            rvar, tvar, ivar, sid=0, best=[], backup=[], expected = Nothing,
+            openingMap = empty,
+            tc = TC{myTime=60000, oTime=60000, lvlMoves=40, lvlTime=600000, lvlIncr=5000}} 
 
 main [] = main ["best"]            
 main [arg] = do
@@ -29,11 +33,53 @@ main [arg] = do
             "resign"    → strategyResign
             "minimax"   → strategyMiniMax
             "ab"        → strategyAlphaBeta
-            _           → strategyAlphaBeta   
-    protocol strategy gs.{name=arg}
+            _           → strategyResign
+    let f = File.new "./data"
+    c ← f.isDirectory
+    unless c do
+        f.mkdirs
+        pure ()
+    hm1 ← initOpeningMap WHITE empty
+    hm2 ← initOpeningMap BLACK hm1
+    
+    protocol strategy gs.{name=arg, openingMap=hm2}
     Concurrent.shutdown
 main (arg:args) = main [arg] 
-     
+
+initOpeningMap :: Player -> HashMap Position [Move] -> IO (HashMap Position [Move])
+initOpeningMap p hm = do
+        let filename = "data/opening-" ++ (show p).toLowerCase
+        rdr ← openReader filename
+        loopReader filename 1 rdr hm
+          `finally` rdr.close
+    `catch` (\(some::FileNotFoundException) -> pure hm)
+
+loopReader :: String → Int -> MutableIO BufferedReader → HashMap Position [Move] -> IO (HashMap Position [Move])
+loopReader fn !ln rdr hm = do
+    line ← rdr.getLine
+    case '\s+'.splitted line of
+        args@[alg, fen1, fen2, fen3, fen4, fen5, fen6] -> 
+            case decodeFEN (joined " " (tail args)) of
+                Right pos → do
+                    let valid = moves pos
+                    case unAlgebraic valid alg of
+                        Just m → case lookup pos hm of
+                            Nothing → loopReader fn (ln+1) rdr (insert pos [m] hm)
+                            Just ms
+                                | m `notElem` ms → loopReader fn (ln+1) rdr (insert pos (m:ms) hm)
+                                | otherwise      → loopReader fn (ln+1) rdr hm    -- duplicate entry?
+                        Nothing → do
+                            println ("# illegal move " ++ alg ++ " in " ++ fn ++ " line " ++ show ln)
+                            loopReader fn (ln+1) rdr hm
+                Left msg → do
+                    println ("# illegal FEN (" ++ msg ++ ") in "  ++ fn ++ " line " ++ show ln)
+                    loopReader fn (ln+1) rdr hm
+        _ -> do
+            println ("# ignoring line " ++ show ln ++ " of file " ++ fn 
+                ++ ", it doesn't have 7 space separated fields.")
+            loopReader fn (ln+1) rdr hm 
+  `catch` (\(some::EOFException) → pure hm)
+
 --- a template for new strategies
 strategyTemplate ∷ Strategy
 strategyTemplate gs cin cout = do
