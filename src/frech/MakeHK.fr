@@ -1,0 +1,16 @@
+module frech.MakeHK where
+
+import System.Random
+
+quartett [] = []
+quartett xs = take 4 xs : quartett (drop 4 xs)
+
+fmt ∷ Long → String
+fmt n = "0x%016xL".format n
+    
+main = do
+    qs ← fmap (map (map fmt) . quartett) (replicateM 1000 randomIO :: IO [Long])
+    println "public final static long[] zrandoms = new long[] {" 
+    mapM_ (println . (++",") . ("\t"++) . joined ", ") qs
+    println "};"
+    pure ()
