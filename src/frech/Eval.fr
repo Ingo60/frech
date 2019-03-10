@@ -253,7 +253,7 @@ goHanging pos m n
         !fx = singleton ix
 --- compute the penalty for  a hanging 'Piece'
 scoreHanging ∷ Position → Index → Int
-scoreHanging pos ix = forP fi.player discounted
+scoreHanging pos ix = forP fi.player discounted 
     where
         !fi = whatIsOn pos ix
         !active = fi.player == pos.turn 
