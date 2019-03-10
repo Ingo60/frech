@@ -55,7 +55,8 @@ import frech.Daten
 
 
 --- the order of the fields as they appear in FEN
-fenOrder = join [[A8…H8], [A7…H7], [A6…H6], [A5…H5], [A4…H4], [A3…H3], [A2…H2], [A1…H1]]
+fenOrder = join fenRanks
+fenRanks = [[A8…H8], [A7…H7], [A6…H6], [A5…H5], [A4…H4], [A3…H3], [A2…H2], [A1…H1]]
 
 decodeFEN ∷ String → (String | Position)
 decodeFEN fen = case '\s+'.splitted fen of
@@ -111,3 +112,39 @@ decodeFEN fen = case '\s+'.splitted fen of
                 _  -> Left ("Invalid FEN: bad placement character " ++ show c) 
             where
                 wo = singleton i
+
+encodeFEN :: Position -> String
+encodeFEN pos = joined " " [fen1, fen2, fen3, fen4, fen5, fen6]
+    where
+        fen6 = "1"      -- we don't count full moves
+        fen5 = show pos.getPlyCounter
+        fen4 = if null eps then "-" else show (bitIndex eps)
+        fen3 = if null crs then "-" else foldIndexes encodeCR "" crs
+        eps  = pos.flags `inter` Position.enPassantBits
+        crs  = pos.flags `inter` Position.castlingBits
+        encodeCR C1 acc = "Q" ++ acc
+        encodeCR G1 acc = "K" ++ acc
+        encodeCR C8 acc = "q" ++ acc
+        encodeCR G8 acc = "k" ++ acc
+        encodeCR xx acc = "?" ++ acc    -- garbage
+        fen2 = if pos.turn == WHITE then "w" else "b"
+        fen1 = joined "/" ranks
+        ranks = map mkRank fenRanks
+        mkRank = correctEmpty . joined "" . map pp 
+        pp ix = case whatIsOn pos ix of
+            fi -> case fi.piece of
+                EMPTY   → "-"
+                KING    → if fi.player == WHITE then "K" else "k"
+                QUEEN   → if fi.player == WHITE then "Q" else "q"
+                ROOK    → if fi.player == WHITE then "R" else "r"
+                BISHOP  → if fi.player == WHITE then "B" else "b"
+                KNIGHT  → if fi.player == WHITE then "N" else "n"
+                PAWN    → if fi.player == WHITE then "P" else "p"
+        correctEmpty  =   _.replaceAll '-{1}'  "1"
+                        . _.replaceAll '-{2}'  "2"
+                        . _.replaceAll '-{3}'  "3"
+                        . _.replaceAll '-{4}'  "4" 
+                        . _.replaceAll '-{5}'  "5" 
+                        . _.replaceAll '-{6}'  "6" 
+                        . _.replaceAll '-{7}'  "7" 
+                        . _.replaceAll '-{8}'  "8"  
