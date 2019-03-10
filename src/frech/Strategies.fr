@@ -82,66 +82,58 @@ loopReader fn !ln rdr hm = do
 
 --- a template for new strategies
 strategyTemplate ∷ Strategy
-strategyTemplate gs cin cout = do
+strategyTemplate gs  = do
     if true  -- there is a next move
     then do
         m <- pure M{player=WHITE, piece=PAWN, promote=EMPTY, from=E2, to=E4}
         -- this could have taken a while, let's see if we got something meanwhile
-        abort ← cin.poll
-        case abort of
-            Just false → pure ()   -- abort
-            Just true  → println "# protocol error, got CONTINUE before sending move" >> stdout.flush
-            Nothing    → do 
-                cout.put (MV gs.sid  [PV{moves=[m], val=0, nodes=1}])
-                continue <- cin.take
-                if continue then strategyTemplate gs cin cout else pure ()
+        continue ← gs.talkPV PV{moves=[m], val=0, nodes=1}
+        if continue then strategyTemplate gs else pure ()
     else do 
-        cout.put (NoMore gs.sid)
+        gs.tellNoMore
         pure ()
 
 --- This strategy doesn't know how to play chess, thus it says it doesn't find a move.
 --- This causes the driver to resign the game, since it doesn't have a best move so far.
 strategyResign :: Strategy
-strategyResign gs cin cout = cout.put (NoMore gs.sid)
+strategyResign gs = gs.tellNoMore 
 
 --- This strategy selects the first move in the list of moves.
 --- Scored 3 times draw by repetition in a 10 games match with fairymax!
 strategyFirst :: Strategy
-strategyFirst gs cin cout = do
+strategyFirst gs = do
     let m = head (moves gs.current)
-    cout.put (MV gs.sid [PV{moves=[m], val=0, nodes=1}])
-    continue ← cin.take
-    if continue then cout.put (NoMore gs.sid) else pure ()
+    continue ← gs.talkPV  PV{moves=[m], val=0, nodes=1}
+    if continue then gs.tellNoMore else pure ()
 
 --- This strategy selects the best move (indicated by eval), but doesn't consider opponents replies
 strategyBest :: Strategy
-strategyBest gs cin cout = do
+strategyBest gs  = do
     let ms = moves gs.current
         best = if gs.current.turn == WHITE 
             then head (sortBy (descending (evalHist gs.history . applyMove gs.current)) ms)
             else head (sortBy (ascending  (evalHist gs.history . applyMove gs.current)) ms)
-    cout.put (MV gs.sid [PV{moves=[best], val=0, nodes=1}])
-    continue ← cin.take
-    if continue then cout.put (NoMore gs.sid) else pure ()
+    continue ← gs.talkPV PV{moves=[best], val=0, nodes=1}
+    if continue then gs.tellNoMore else pure ()
 
 
 strategyMiniMax :: Strategy
-strategyMiniMax gs cin cout = do
+strategyMiniMax gs  = do
         let allMoves = moves gs.current
         if length allMoves == 1
             then do 
-                cout.put (MV gs.sid [PV{moves=[head allMoves], val=0, nodes=1}])
-                cont ← cin.take
-                if cont then cout.put (NoMore gs.sid) else pure()
-            else tryMoves 2 cin cout gs [] allMoves 
+                -- cout.put (MV gs.sid [PV{moves=[head allMoves], val=0, nodes=1}])
+                cont ← gs.talkPV PV{moves=[head allMoves], val=0, nodes=1}
+                if cont then gs.tellNoMore else pure()
+            else tryMoves 2 gs [] allMoves 
     where
-        tryMoves ∷ Int → MVar Command → MVar Input → GameState  → [Variation] → [Move] → IO ()
-        tryMoves depth cin cout gs pvs [] = tryMoves (depth+1) cin cout gs [] (ordered pvs)
+        tryMoves ∷ Int →  GameState  → [Variation] → [Move] → IO ()
+        tryMoves depth  gs pvs [] = tryMoves (depth+1)  gs [] (ordered pvs)
             where ordered pvs = map (head • Variation.moves) sorted
                   sorted = if gs.player == WHITE 
                             then sortBy (descending Variation.val) pvs
                             else sortBy (ascending  Variation.val) pvs
-        tryMoves depth cin cout gs pvs (m:ms) = do
+        tryMoves depth gs pvs (m:ms) = do
             let !pvraw = miniMax gs.history depth m
                 !pvms  = length pvraw.moves * 100 - 1
                 !pv = if pvraw.val == whiteIsMate then pvraw.{val ← (+pvms)}
@@ -153,11 +145,10 @@ strategyMiniMax gs cin cout = do
                 Just true  → println "# protocol error, got CONTINUE before sending move" >> stdout.flush
                 Nothing    →  
                      do
-                        cout.put $! (MV gs.sid [pv])
-                        continue ← cin.take
-                        if continue
-                        then tryMoves depth cin cout gs (pv:pvs) ms
-                        else pure ()        
+                        continue ← gs.talkPV pv
+                        if continue 
+                            then tryMoves depth  gs (pv:pvs) ms
+                            else pure ()        
 
 
 
@@ -188,24 +179,22 @@ miniMax hist n m
             unmöglich → error "miniMax has no moves"
 
 strategyAlphaBeta :: Strategy
-strategyAlphaBeta gs cin cout = do
+strategyAlphaBeta gs  = do
         let allMoves = moves gs.current
         if length allMoves == 1
             then do 
-                cout.put (MV gs.sid  [PV{moves=[head allMoves], val=0, nodes=1}])
-                cont ← cin.take
-                if cont then cout.put (NoMore gs.sid) else pure()
-            else tryMoves 3 whiteIsMate blackIsMate cin cout gs [] allMoves 
+                cont ← gs.talkPV PV{moves=[head allMoves], val=0, nodes=1}
+                if cont then gs.tellNoMore else pure()
+            else tryMoves 3 whiteIsMate blackIsMate  gs [] allMoves 
     where
-        tryMoves ∷ Int → Int → Int → MVar Command → MVar Input → GameState  → [Variation] → [Move] → IO ()
-        tryMoves depth alpha beta cin cout gs pvs [] = do
-                cout.put (Forget gs.sid)
+        tryMoves ∷ Int → Int → Int → GameState  → [Variation] → [Move] → IO ()
+        tryMoves depth alpha beta gs pvs [] = do
+                gs.tellForget
                 if length goodOnes == 1     -- extraordinary move, like mate
                 then do
-                    cout.put (MV gs.sid goodOnes)
-                    cont ← cin.take
-                    if cont then cout.put (NoMore gs.sid) else pure ()
-                else tryMoves (depth+1) whiteIsMate blackIsMate cin cout gs [] (varmoves goodOnes)
+                    cont ← gs.talkPVs goodOnes
+                    if cont then gs.tellNoMore else pure ()
+                else tryMoves (depth+1) whiteIsMate blackIsMate gs [] (varmoves goodOnes)
             where
                 !sorted   = if gs.player == WHITE
                     then sortBy (descending Variation.val) pvs
@@ -231,7 +220,7 @@ strategyAlphaBeta gs cin cout = do
                                     then (max.val - min.val) `quot` 3 + min.val
                                     else max.val - (max.val - min.val) `quot` 3
                 
-        tryMoves depth alpha beta cin cout gs pvs ms
+        tryMoves depth alpha beta gs pvs ms
             --| length ms == 1 = do
             --    cout.put (NoMore gs.sid)
             --    pure ()
@@ -243,11 +232,9 @@ strategyAlphaBeta gs cin cout = do
                     
                 println ("tryAlphaBeta " ++ show depth ++ " " ++  algebraic m)
                 stdout.println    
-                cout.put $! (MV gs.sid [pv])
-                continue ← cin.take
+                continue ← gs.talkPV pv
                 if continue
-                -- then tryMoves depth alpha' beta' cin cout gs (pv:pvs) (tail ms)
-                then tryMoves depth alpha beta cin cout gs (pv:pvs) (tail ms)
+                then tryMoves depth alpha beta gs (pv:pvs) (tail ms)
                 else pure ()
             | otherwise = do
                 let !chunk = take gs.cores ms
@@ -257,11 +244,9 @@ strategyAlphaBeta gs cin cout = do
                 stdout.flush
                 let !nodes = fold (+) 0 (map _.nodes vs)    
                 when (abs nodes >= 0) stdout.flush 
-                cout.put $! (MV gs.sid vs)
-                continue ← cin.take
+                continue ← gs.talkPVs vs
                 if continue
-                -- then tryMoves depth alpha' beta' cin cout gs (pv:pvs) ms
-                then tryMoves depth alpha beta cin cout gs (vs++pvs) ms'
+                then tryMoves depth alpha beta gs (vs++pvs) ms'
                 else pure ()
 
 

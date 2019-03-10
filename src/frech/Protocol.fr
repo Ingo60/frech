@@ -49,7 +49,7 @@ type Clock   = Long
 data State = FORCED | PLAYING | THINKING Clock | TERMINATED
 derive Show State
 
-type Strategy = GameState -> MVar Command -> MVar Input → IO ()
+type Strategy = GameState → IO ()
 
 data TimeControl = TC {
         !myTime, !oTime ∷ Clock         --- My remaining time and her remaining time in milliseconds
@@ -120,7 +120,14 @@ data GameState = GS {
         talkDriver :: GameState -> Input -> IO Command
         talkDriver gs inp = do 
             gs.ivar.put inp
-            gs.tvar.take 
+            gs.tvar.take
+        tellNoMore, tellForget :: GameState → IO ()
+        tellNoMore gs = tellDriver gs (NoMore gs.sid)
+        tellForget gs = tellDriver gs (Forget gs.sid)
+        talkPV :: GameState → Variation → IO Command
+        talkPV gs var = talkDriver gs (MV gs.sid [var]) 
+        talkPVs :: GameState → [Variation] → IO Command
+        talkPVs gs vars = talkDriver gs (MV gs.sid vars) 
 
 
 
@@ -259,8 +266,9 @@ protocol strategy gs  = do
                 now ← System.currentTimeMillis ()
                 mv  ← MVar.newEmpty
                 beginThinking ()
-                forkIO (strategy gs mv gs.ivar)
-                pure gs.{state=THINKING now, best=[], backup=[], tvar=mv}
+                let gs' = gs.{state=THINKING now, best=[], backup=[], tvar=mv}
+                forkIO (strategy gs')
+                pure gs'
         commandProcessing cmd = case cmd of
                 EOF     → pure gs.{state=TERMINATED}   -- too bad
                 Forget _ -> pure gs
