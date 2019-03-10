@@ -408,12 +408,10 @@ unAlgebraic ms (m~'([a-h][1-8])([a-h][1-8])([nbrq]?)') = listToMaybe (filter cor
     where
         from = m.group 1 >>= Index.read
         to   = m.group 2 >>= Index.read 
-        prom = case maybe "" String.toUpperCase (m.group 3) of
-                "" -> "-"
-                x  -> x
+        prom = maybe "" String.toUpperCase (m.group 3)
         corresponding ∷ Move → Bool
         corresponding move = Just move.from == from && Just move.to == to &&
-            (move.piece != PAWN && prom == "-" || prom == show move.promote) 
+            (prom == "" || prom == show move.promote) 
 unAlgebraic invalid garbage = Nothing
 --- List of possible 'Moves' in a given 'Position'. 
 --- The moves may still turn out illegal due to check.
