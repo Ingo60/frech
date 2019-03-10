@@ -19,3 +19,8 @@ h5h4 rnbqkbnr/pp3pp1/2p1p3/7p/4N3/1P6/PBPPBPPP/R2QK1NR b kqKQ - 5 1
 e6e5 rnbqkbnr/pp3pp1/2p1p3/8/4N2p/1P5N/PBPPBPPP/R2QK2R b kqKQ - 6 1
 c8f5 rnbqkbnr/pp3pp1/2p5/4B3/4N2p/1P5N/P1PPBPPP/R2QK2R b kqKQ - 6 1
 f8g7 r2qkbnr/pp1n1pB1/2p5/5bN1/4N2p/1P6/P1PPBPPP/R2QK2R b kqKQ - 9 1
+c6e7 r1bqkbnr/pppp1ppp/2n5/3Pp3/4P3/8/PPP2PPP/RNBQKBNR b kqKQ - 1 1
+e7c6 r1bqkbnr/pp1pnppp/3p4/4p3/2B1P3/8/PPP2PPP/RNBQK1NR b kqKQ - 3 1
+c6b4 r1bqkbnr/pp1p1ppp/2np4/4p3/2B1P3/2N5/PPP2PPP/R1BQK1NR b kqKQ - 5 1
+b7b5 r1bqkbnr/pp1p1ppp/3p4/4p3/1nB1P3/P1N5/1PP2PPP/R1BQK1NR b kqKQ - 6 1
+c8b7 r1bq1bnr/p2p1kpp/3p4/1p2p3/1P2P3/2N5/1PP2PPP/R1BQK1NR b KQ - 6 1
