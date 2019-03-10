@@ -130,8 +130,8 @@ checkWhiteCastling, checkBlackCastling, whiteBlockedBishopPawns, blackBlockedBis
 
 checkWhiteCastling pos = castling
     where
-        !castling = if castled then 160              -- for having castled 
-                    else castlingRights * 50 - 150 
+        !castling = if castled then 100              -- for having castled 
+                    else castlingRights * 25 - 75 
                          --   then negate 95          -- for having moved the king or rooks 
                          --   else negate (30 `quot` castlingRights)          -- for not having castled yet
         !castled = not (null (pos.flags `inter` Position.whiteHasCastledBits))
@@ -139,8 +139,8 @@ checkWhiteCastling pos = castling
         
 checkBlackCastling pos = castling
     where
-        !castling = if castled then 160              -- for having castled 
-                    else castlingRights * 50 - 150
+        !castling = if castled then 100              -- for having castled 
+                    else castlingRights * 25 - 75
         !castled = not (null (pos.flags `inter` Position.blackHasCastledBits))
         !castlingRights = card (pos.flags `inter` blackCastlingRights)
 
