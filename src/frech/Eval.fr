@@ -1,5 +1,5 @@
 module frech.Eval
-        inline (whiteLazyOfficers, blackLazyOfficers, opening) 
+        inline (whiteLazyOfficers, blackLazyOfficers, opening, forP) 
     where
 
 import Data.Bits (BitSet, .^. , .&., shiftL, ushiftR)
@@ -21,8 +21,7 @@ percent n m  = (n * m) `quot` 100
 
 --- take the value in favor of a certain 'Player'
 forP ∷ Player → Int → Int
-forP WHITE n = n
-forP BLACK n = negate  n
+forP p n = p.factor * n
 
 --- discount n c m
 --- discount n% from m if condition holds
@@ -130,17 +129,17 @@ checkWhiteCastling, checkBlackCastling, whiteBlockedBishopPawns, blackBlockedBis
 
 checkWhiteCastling pos = castling
     where
-        !castling = if castled then 100              -- for having castled 
-                    else castlingRights * 25 - 75 
-                         --   then negate 95          -- for having moved the king or rooks 
-                         --   else negate (30 `quot` castlingRights)          -- for not having castled yet
+        !castling = if castled then 50              -- for having castled 
+                    else castlingRights * 15 - 50 
+                         --   then negate 50          -- for having moved the king or rooks 
+                         --   else negate 20, 35, 50         -- for not having castled yet
         !castled = not (null (pos.flags `inter` Position.whiteHasCastledBits))
         !castlingRights = card (pos.flags `inter` whiteCastlingRights)
         
 checkBlackCastling pos = castling
     where
-        !castling = if castled then 100              -- for having castled 
-                    else castlingRights * 25 - 75
+        !castling = if castled then 50              -- for having castled 
+                    else castlingRights * 15 - 50
         !castled = not (null (pos.flags `inter` Position.blackHasCastledBits))
         !castlingRights = card (pos.flags `inter` blackCastlingRights)
 
@@ -246,14 +245,14 @@ score pos ix = forP fi.player pv
 goHanging ∷ Position → Fields → Int → Int
 goHanging pos m n
     | null m = n
-    | n > 0  = goHanging pos (m `diff` fx) (110 `percent` (max n (scoreHanging pos ix)))
-    | otherwise = goHanging pos (m `diff` fx) (max n (scoreHanging pos ix))
+    | n != 0    = goHanging pos (m `diff` fx) (110 `percent` (min n (scoreHanging pos ix)))
+    | otherwise = goHanging pos (m `diff` fx) (min n (scoreHanging pos ix))
     where
         !ix = bitIndex m
         !fx = singleton ix
 --- compute the penalty for  a hanging 'Piece'
 scoreHanging ∷ Position → Index → Int
-scoreHanging pos ix = forP fi.player discounted 
+scoreHanging pos ix =  fi.player.factor * discounted 
     where
         !fi = whatIsOn pos ix
         !active = fi.player == pos.turn 
