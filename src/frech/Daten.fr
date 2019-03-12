@@ -817,8 +817,8 @@ applyMove !p !m
                 else empty
             -- increment number of plies, unless it's a capture or PAWN move
             !plies = if m.piece == PAWN || not (p.empty m.to)
-                    then BitSet ((p.flags `inter` Position.counterBits).set + Position.onePlyRoot.set) 
-                    else BitSet ((p.flags `inter` Position.counterBits).set + Position.onePly.set)
+                    then BitSet ((p.flags `inter` Position.rootCounterBits).set + Position.onePlyRoot.set) 
+                    else BitSet ((p.flags `inter` Position.counterBits).set     + Position.onePly.set)
             -- fields that will be empty after the move
             !fromMask = if m.promote == PAWN -- en passant capture
                         then if m.player == WHITE 
