@@ -141,9 +141,7 @@ strategyMiniMax gs  = do
         tryMoves depth gs pvs (m:ms) = do
             let !pvraw = miniMax gs.history depth m
                 !pvms  = length pvraw.moves * 100 - 1
-                !pv = if pvraw.val == whiteIsMate then pvraw.{val ← (+pvms)}
-                      else if pvraw.val == blackIsMate then pvraw.{val ← subtract pvms}
-                      else pvraw
+                !pv = correctMateDistance pvraw
             abort ← pure Nothing -- if better then cin.poll else cin.poll       -- make sure it's evaluated
             case abort of
                 Just false → println "# strategy aborted" >> stdout.flush
@@ -269,7 +267,7 @@ correctMateDistance pv =   if pv.val == whiteIsMate then pv.{val = pv.val + dist
                       else if pv.val == blackIsMate then pv.{val = pv.val - dist}
                       else pv
       where
-        dist = length pv.moves * 100 - 1
+        dist = length pv.moves
 
 alphaBeta  ∷ Bool → [Position] → Int → Int → Int → Move → Variation
 alphaBeta extended hist !d !alpha !beta m
