@@ -158,28 +158,33 @@ strategyMiniMax gs  = do
 
 miniMax ∷ [Position] → Int → Move → Variation
 -- miniMax hist 0 m = PV [m] (eval hist (applyMove (head hist) m)) 1 
-miniMax hist n m
-    | stopThinking              =  PV [m] 0 1 
-    | null ms                   =  let  val = if check 
+miniMax !hist !n !m
+    | stopThinking              =  PV [m] 0 1
+    | otherwise                 = case moves pos of
+        []                      =  let  val = if check 
                                         then if pos.turn == WHITE then whiteIsMate else blackIsMate
                                         else 0 
                                     in PV [m] val 1
-    | pos.getPlyCounter >= 100  = PV [m] 0 1
-    | pos `element` hist        = PV [m] 0 1
-    | n == 0                    = PV [m] (eval pos) 1
-    | otherwise                 = best.{nodes, moves ← (m:)} 
+        ms                      = 
+          if  pos.getPlyCounter >= 100  then  PV [m] 0 1
+          else if pos `element` hist    then  PV [m] 0 1
+          else if n == 0                then  PV [m] (eval pos) 1
+          else case if n==2 then mapP (miniMax hist' (n-1)) ms 
+                    else         map  (miniMax hist' (n-1)) ms of
+                pvs                         → best.{nodes, moves ← (m:)}
+                    where
+                        !nodes  = fold (\n pv -> n + pv.nodes) 0 pvs
+                        !best   = case pvs of 
+                            (pv:pvs) → if pos.turn == WHITE
+                                    then (goMaximum pv pvs) 
+                                    else (goMinimum pv pvs)
+                            unmöglich → error "miniMax has no moves"
+                            
     where
         !pos   = applyMove (head hist) m
         !check = inCheck pos pos.turn
-        !ms    = moves pos
         hist'  = pos:hist
-        pvs    = if n==2 then mapP (miniMax hist' (n-1)) ms else map (miniMax hist' (n-1)) ms 
-        nodes  = fold (\n pv -> n + pv.nodes) 0 pvs
-        best   = case pvs of 
-            (pv:pvs) → if pos.turn == WHITE
-                    then (goMaximum pv pvs) 
-                    else (goMinimum pv pvs)
-            unmöglich → error "miniMax has no moves"
+
 
 strategyAlphaBeta :: Strategy
 strategyAlphaBeta gs  = do
@@ -270,7 +275,7 @@ correctMateDistance pv =   if pv.val == whiteIsMate then pv.{val = pv.val + dist
         dist = length pv.moves
 
 alphaBeta  ∷ Bool → [Position] → Int → Int → Int → Move → Variation
-alphaBeta extended hist !d !alpha !beta m
+alphaBeta !extended !hist !d !alpha !beta !m
     | stopThinking              =  PV [m] 0 1 
     | null ms                   =  let  val = if check 
                                             then if pos.turn == WHITE then whiteIsMate else blackIsMate

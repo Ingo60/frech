@@ -10,9 +10,9 @@ import frech.Daten
 pieceValue EMPTY  = 0
 pieceValue PAWN   = 100
 pieceValue KNIGHT = 300
-pieceValue BISHOP = 300
-pieceValue ROOK   = 500
-pieceValue QUEEN  = 800
+pieceValue BISHOP = 305     -- dont't echange for KNIGHT needlessly
+pieceValue ROOK   = 550
+pieceValue QUEEN  = 875
 pieceValue KING   = 1000
 
 --- > p `percent` v
@@ -109,7 +109,7 @@ eval pos = (matDelta * ((max matWhite matBlack * 1000) `quot`  min matWhite matB
         check = inCheck pos pos.turn
         checkBonus = if check then 25 else 0
         !matWhite = goMaterial pos pos.whites 0
-        !matBlack = goMaterial pos (pos.whites `diff` pos.whites) 0
+        !matBlack = negate (goMaterial pos (pos.figures `diff` pos.whites) 0)
         matDelta = matWhite - matBlack
 
 
@@ -125,15 +125,15 @@ checkWhiteCastling, checkBlackCastling, whiteBlockedBishopPawns, blackBlockedBis
 
 --- Try to enforce castling:
 --- Gives a bonus of '50' if WHITE has castled.
---- Otherwise, gives a malus of -50 if 'KING' or both 'ROOK's have moved.
---- Otherwise, gives a malus of -35 if one 'ROOK' has moved, but the 'KING' can still castle with the other
---- Otherwise, gives a malus of -20 if it hasn't castled yet but still  could to both sides.
+--- Otherwise, gives a malus of -200 if 'KING' or both 'ROOK's have moved.
+--- Otherwise, gives a malus of -100 if one 'ROOK' has moved, but the 'KING' can still castle with the other
+--- Otherwise, gives a malus of -50  if it hasn't castled yet but still could to both sides.
 --- Hence, by castling, one wins 0.7 'PAWN's worth, while by moving the 'KING' prematurely one looses up to 0.5 
 
 checkWhiteCastling pos = castling
     where
         !castling = if castled then 50              -- for having castled 
-                    else castlingRights * 15 - 50 
+                    else castlingRights * 50 - 150 
                          --   then negate 50          -- for having moved the king or rooks 
                          --   else negate 20, 35, 50         -- for not having castled yet
         !castled = not (null (pos.flags `inter` Position.whiteHasCastledBits))
@@ -142,7 +142,7 @@ checkWhiteCastling pos = castling
 checkBlackCastling pos = castling
     where
         !castling = if castled then 50              -- for having castled 
-                    else castlingRights * 15 - 50
+                    else castlingRights * 50 - 150
         !castled = not (null (pos.flags `inter` Position.blackHasCastledBits))
         !castlingRights = card (pos.flags `inter` blackCastlingRights)
 
