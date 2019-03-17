@@ -33,6 +33,7 @@ main [arg] = do
             "resign"    → strategyResign
             "minimax"   → strategyMiniMax
             "ab"        → strategyAlphaBeta
+            "negamax"   → strategyNegaMax
             _           → strategyResign
     let f = File.new "./data"
     c ← f.isDirectory
@@ -140,7 +141,6 @@ strategyMiniMax gs  = do
                             else sortBy (ascending  Variation.val) pvs
         tryMoves depth gs pvs (m:ms) = do
             let !pvraw = miniMax gs.history depth m
-                !pvms  = length pvraw.moves * 100 - 1
                 !pv = correctMateDistance pvraw
             abort ← pure Nothing -- if better then cin.poll else cin.poll       -- make sure it's evaluated
             case abort of
@@ -237,8 +237,8 @@ strategyAlphaBeta gs  = do
             | gs.cores == 1 = do
                 let m = head ms
                     pv = correctMateDistance (alphaBeta false gs.history depth alpha beta m)
-                    alpha' = if gs.player == WHITE then 150 `percent` max alpha pv.val else alpha
-                    beta'  = if gs.player == BLACK then 150 `percent` min beta  pv.val else beta
+                    -- alpha' = if gs.player == WHITE then 150 `percent` max alpha pv.val else alpha
+                    -- beta'  = if gs.player == BLACK then 150 `percent` min beta  pv.val else beta
                     
                 println ("tryAlphaBeta " ++ show depth ++ " " ++  algebraic m)
                 stdout.println    
@@ -299,8 +299,8 @@ alphaBeta !extended !hist !d !alpha !beta !m
         hist'  = pos:hist
         
         go ∷ Bool → Int → Player → Int → Int → [Position] → Variation → [Move] → Variation
-        go ext depth player alpha beta hist best [] = best
-        go ext depth player alpha beta hist best (m:ms)
+        go !ext !depth !player !alpha !beta !hist !best [] = best
+        go !ext !depth !player !alpha !beta !hist !best (!m:ms)
             -- better pos.turn best beta = best
             | player == WHITE = 
                 if best.val >= beta then best
@@ -311,3 +311,176 @@ alphaBeta !extended !hist !d !alpha !beta !m
                 if best.val <= alpha then best
                 else case alphaBeta ext hist (depth-1) alpha best.val m of 
                     next → go ext depth  player alpha best.val  hist  (min best next).{nodes = best.nodes + next.nodes} ms
+
+
+negaMax :: GameState → Bool → Int → Int → Int → Variation
+negaMax !gs !extended !depth !alpha !beta
+    | stopThinking              =  PV [] 0 1 
+    -- pos.getPlyCounter >= 100  = PV [] 0 1
+    -- | pos `element` tail gs.history  = PV [] 0 1
+    {- | d == 0                    = if targt.piece != EMPTY && not extended  
+                                    then alphaBeta true hist 1 alpha beta m 
+                                    else PV [m] (eval pos) 1 -}
+    -- depth == 0                = PV [] (pos.turn.factor * evalMS pos ms) 1 
+    | otherwise                 = case ms of
+        !m:moves 
+            | pos.getPlyCounter >= 100       = PV [] 0 1
+            | pos `element` tail gs.history  = PV [] 0 1
+            | depth == 0                     = {- if not extended && not (pos.empty m.to)
+                                                 then   negaMax gs true 1 alpha beta
+                                                 else -}  PV [] (pos.turn.factor * eval pos) 1
+            | otherwise                      =
+                case applyMove pos m of
+                  !next
+                    | inCheck next next.turn,
+                      null (Daten.moves next) = PV [m] (next.turn.factor*blackIsMate) 1
+                    | otherwise = case negaMax gs.{history=next!:gs.history} capture d (-beta) (-alpha) of
+                    !pv
+                        | pos.getRootDistance == 0,
+                          traceLn diag = pv
+                        | otherwise = if score >= beta 
+                            then cpv
+                            else case go gs extended depth (max alpha score) beta cpv moves of
+                                best → best.{nodes = best.nodes+0}  -- avoid tail recursion here
+                        where
+                            !score = negate pv.val 
+                            !cpv = PV (m:pv.moves) score pv.nodes  -- candidate pv
+                            diag = "# alpha=" ++ show alpha ++ ", beta=" ++ show beta
+                                    ++ ", score=" ++ show score 
+                                    ++ ", candidate=" ++ joined " "  (map algebraic cpv.moves)
+                    where
+                            capture = not extended &&  depth == 1 && not (pos.empty m.to) 
+                            d = if capture then depth else depth-1 
+ 
+        []
+            | check                         = PV [] mateScore 1
+            | otherwise                     = PV [] 0 1
+                 
+                                        
+    where
+        !pos   = gs.current
+        !ms    = expectedMoves gs
+        check = inCheck pos pos.turn
+        whoIsMate = if pos.turn == WHITE then whiteIsMate else blackIsMate
+        mateScore = if odd pos.getRootDistance then negate whoIsMate else whoIsMate 
+        
+        go ∷ GameState → Bool → Int → Int → Int → Variation → [Move] → Variation
+        go !gs !ext !depth !alpha !beta !best [] = best
+        go !gs !ext !depth !alpha !beta !best (m:ms) 
+            -- | otherwise 
+            = case applyMove gs.current m of
+                !pos →  case negaMax gs.{history=pos!:gs.history} ext (depth-1) (-beta) (-alpha) of
+                    !pv → case negate pv.val of
+                        !score
+                            | gs.current.getRootDistance == 0,
+                              traceLn diag = best
+                            | otherwise = if score >= beta then cpv
+                                else if (score > alpha)
+                                    then go gs ext depth score beta cpv ms
+                                    else go gs ext depth alpha beta best.{nodes=best.nodes+pv.nodes} ms
+                            where
+                                cpv = pv.{nodes=best.nodes+pv.nodes,moves=m!:pv.moves,val=score}
+                                diag = "# alpha=" ++ show alpha ++ ", beta=" ++ show beta
+                                    ++ ", score=" ++ show score ++ (if score > alpha then "!" else " ")
+                                    ++ (if score >= beta then "!!" else "") 
+                                    ++ " candidate=" ++ joined " "  (map algebraic cpv.moves) 
+
+expectedMoves :: GameState → [Move]
+expectedMoves gs 
+    | odd pos.getRootDistance, Just ms ← lookup pos gs.openingMap = ms
+    | otherwise = moves pos 
+    where 
+        pos = gs.current
+
+strategyNegaMax ∷ Strategy
+strategyNegaMax gs  = do
+        let allMoves = moves gs.current
+        if length allMoves == 1
+            then do 
+                cont ← gs.talkPV PV{moves=[head allMoves], val=0, nodes=1}
+                if cont then gs.tellNoMore else pure()
+            else  tryMoves gs 3 whiteIsMate blackIsMate  [] allMoves
+                -- loop gs 3 
+    where
+        loop :: GameState -> Int -> IO ()
+        loop gs d = do
+            let !pvr = negaMax gs false d whiteIsMate blackIsMate
+                !pv  = correctMateDistance pvr 
+            gs.tellForget
+            continue ← gs.talkPV pv
+            if continue
+                then if length pv.moves + 1 < d 
+                        || gs.player == BLACK && pvr.val == whiteIsMate 
+                        || gs.player == WHITE && pvr.val == blackIsMate
+                    then gs.tellNoMore
+                    else loop gs (d+1)
+                else pure ()
+             
+        tryMoves ∷ GameState → Int → Int → Int →  [Variation] → [Move] → IO ()
+        tryMoves gs depth alpha beta pvs [] = if theEndIsNear depth pvs 
+                    then gs.tellNoMore
+                    else do
+                        gs.tellForget
+                        tryMoves gs (depth+1) whiteIsMate blackIsMate [] (varmoves goodOnes)
+            where
+                !sorted   = if gs.player == WHITE
+                    then sortBy (descending Variation.val) pvs
+                    else sortBy (ascending Variation.val) pvs
+                !goodOnes = {- pruned gs.player -} sorted
+                varmoves ∷ [Variation] → [Move]
+                varmoves pvs = map (head • Variation.moves) pvs
+                relevantWhite ∷ Int → Variation → Bool
+                relevantWhite r x  = x.val >= r
+                relevantBlack ∷ Int → Variation → Bool
+                relevantBlack r x  = x.val <= r
+                pruned ∷ Player → [Variation] → [Variation]
+                pruned c pvs
+                    | length pvs > 10 = if c == WHITE 
+                        then (takeWhile (relevantWhite relevance) pvs)
+                        else (takeWhile (relevantBlack relevance) pvs)
+                    | otherwise = pvs
+                    where
+                        !max = maximum  pvs
+                        !min = minimum  pvs
+                        -- das schlechteste 1/3 soll raus
+                        -- weiß: 100 -100 -->  200/3 - 100 = 66 - 100 = -43   (43..100)
+                        -- schwarz: 100 -100      
+                        !relevance = if c == WHITE 
+                                    then (max.val - min.val) `quot` 3 + min.val
+                                    else max.val - (max.val - min.val) `quot` 3
+                
+        tryMoves gs depth alpha beta pvs ms
+            --| length ms == 1 = do
+            --    cout.put (NoMore gs.sid)
+            --    pure ()
+            | true || gs.cores == 1 = do
+                let m = head ms
+                    pos = applyMove gs.current m
+                    pv' = correctMateDistance (negaMax gs.{history=pos:gs.history} false depth (-beta) (-alpha))
+                    pv = pv'.{moves=m:pv'.moves, val ← (* pos.turn.factor)}
+                    score = pv.val
+                    alpha' =  max alpha score
+                    
+                    
+                println ("# tryNegaMax " ++ show depth ++ " alpha=" ++  show alpha
+                     ++ " beta=" ++  show beta
+                     ++ " move=" ++ algebraic m ++ " score=" ++ show score)
+                stdout.flush    
+                continue ← gs.talkPV pv
+                if continue
+                then tryMoves gs depth alpha beta (pv:pvs) (tail ms)
+                else pure ()
+                {-
+            | otherwise = do
+                let !chunk = take gs.cores ms
+                    !ms'   = drop gs.cores ms
+                    !vs    = mapP (correctMateDistance . alphaBeta false gs.history depth alpha beta) chunk
+                println ("tryAlphaBeta " ++ show depth ++ " " ++  display (map algebraic chunk))
+                stdout.flush
+                let !nodes = fold (+) 0 (map _.nodes vs)    
+                when (abs nodes >= 0) stdout.flush 
+                continue ← gs.talkPVs vs
+                if continue
+                then tryMoves depth alpha beta gs (vs++pvs) ms'
+                else pure ()
+                -}

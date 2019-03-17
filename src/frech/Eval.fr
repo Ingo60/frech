@@ -44,12 +44,19 @@ countEqPos !pos !history = go pos history 0
             | p == h    = go p hs (n+1)
             | otherwise = go p hs n 
 
---- replace
---- > pos `elem` positions
---- to save thunks
+{-- 
+    replace
+    > pos `elem` positions
+    to save thunks
+
+    In addition, it terminates early when a 'Position' has a zero 50-moves-counter.
+    Because then, the predecessor positions can not be repeated.
+
+-}
 element ∷ Position → [Position] → Bool
 element !p [] = false
-element !p (h:hs) = if p == h then true else element p hs   -- enforce tail recursion
+element !p (h:hs) = if p == h then true     -- note p==h || element p hs would not be a tail call! 
+    else if h.getPlyCounter > 0 then element p hs else false
 
 --- 'Position' value when 'BLACK' is mate.
 !blackIsMate = 0x7fff
@@ -87,7 +94,12 @@ evalHist history pos
 
 --- does not detect mate, stalemate or draw by rule
 eval ∷ Position  → Int
-eval pos = (matDelta * ((max matWhite matBlack * 1000) `quot`  min matWhite matBlack)) `quot` 1000
+eval pos = evalMS pos (moves pos)
+ 
+--- Faster than 'eval' when you have the moves anyway.
+--- Like with 'eval', you need to detect checkmate, stalemate, draw by repetition or by 50 moves rule separately.
+evalMS ∷ Position → [Move] → Int
+evalMS pos mms = (matDelta * ((max matWhite matBlack * 1000) `quot`  min matWhite matBlack)) `quot` 1000
                     + goHanging  pos pos.figures 0 
                     + forP pos.turn (4 * length mms)
                     + forP pos.turn.opponent (4 * length oms)
@@ -102,14 +114,12 @@ eval pos = (matDelta * ((max matWhite matBlack * 1000) `quot`  min matWhite matB
                     + (blackLazyOfficers pos * 15)
                     
     where
-        -- ms = moves pos
-        !oms = if pos.turn == WHITE  then rawMoves pos.{flags = pos.flags `diff`  whiteToMove} 
-                                     else rawMoves pos.{flags = pos.flags `union` whiteToMove}
-        !mms = rawMoves pos
+        oms =  if pos.turn == WHITE  then moves pos.{flags = pos.flags `diff`  whiteToMove} 
+                                     else moves pos.{flags = pos.flags `union` whiteToMove}
         check = inCheck pos pos.turn
         checkBonus = if check then 25 else 0
         !matWhite = goMaterial pos pos.whites 0
-        !matBlack = negate (goMaterial pos (pos.figures `diff` pos.whites) 0)
+        !matBlack = goMaterial pos (pos.figures `diff` pos.whites) 0
         matDelta = matWhite - matBlack
 
 
@@ -239,10 +249,9 @@ goMaterial pos m n
         !fx = singleton ix
 --- compute the value of a 'Piece'
 score ∷ Position → Index → Int
-score pos ix = forP fi.player pv
+score pos ix = pieceValue fi.piece
     where
-        !pv = pieceValue fi.piece
-        !fi = whatIsOn pos ix
+        fi = whatIsOn pos ix
 
 --- compute a penalty for insuficiently defended 'Piece's and return the maximum
 --- (Remember, if we have two pieces attacked, we still can't sum it up, because one of them will most likely esacpe).

@@ -284,8 +284,8 @@ protocol strategy gs  = do
                 Line command → do
                     xboardCommand command gs
         -- send outstanding pongs
-        pong [] = pure ()
-        pong (p:ps) = pong ps >> println ("pong " ++ show p) >> stdout.flush
+        -- pong [] = pure ()
+        -- pong (p:ps) = pong ps >> println ("pong " ++ show p) >> stdout.flush
         sendMove ∷ GameState → IO GameState
         sendMove gs = case gs.best of 
                 [] 
