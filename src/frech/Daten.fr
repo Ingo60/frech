@@ -37,6 +37,7 @@ data Index  = A1 | B1 | C1 | D1 | E1 | F1 | G1 | H1
             | A7 | B7 | C7 | D7 | E7 | F7 | G7 | H7
             | A8 | B8 | C8 | D8 | E8 | F8 | G8 | H8
             where
+                pure native ordNum   "(int)"    :: Index -> Int
                 pure native unsafeFrom "(short)" :: Int -> Index
                 pure native ord  "(int)"   :: Index -> Int
                 from n | n Int.>= 0 && n Int.< 64 = unsafeFrom n
@@ -58,14 +59,14 @@ data Index  = A1 | B1 | C1 | D1 | E1 | F1 | G1 | H1
                 pure native (>=)        ">="                :: Index -> Index -> Bool
                 pure native (<=)        "<="                :: Index -> Index -> Bool
                 i1 <=> i2 = if i1 < i2 then LT else if i1 > i2 then GT else EQ
-                succ = from . (1+) . ord
-                pred = from . (1-) . ord
+                succ = from . (1+) . ordNum
+                pred = from . (1-) . ordNum
                 enumFromThen !i1 !i2 = enumFromThenTo i1 i2 (if i1 < i2 then H8 else A1)
                 enumFromThenTo !i1 !i2 !i3 = map from (Int.enumFromThenTo (ord i1) (ord i2) (ord i3))
                 --- give the rank of a field, e.g. 4 for E4
-                rank index = 1 + (ord index `shiftR` 3)
+                rank index = 1 + (ordNum index `shiftR` 3)
                 --- give the file of a field, e.g. \'e\' for E4
-                file index = chr ('a'.ord  + (ord index .&. 7)) 
+                file index = chr ('a'.ord  + (ordNum index .&. 7)) 
 
 
 instance Eq Index
@@ -294,7 +295,8 @@ data Piece = EMPTY | PAWN | KNIGHT | BISHOP | ROOK | QUEEN | KING where
     pure native (==) "=="     :: Piece -> Piece -> Bool
     pure native (!=) "!="     :: Piece -> Piece -> Bool
     pure native hashCode "(short)" :: Piece -> Int
-
+    pure native unsafeFrom "(short)" :: Int -> Piece
+    pure native ordNum   "(int)"    :: Piece -> Int
 instance Eq Piece
 derive Ord Piece
 derive Enum Piece
@@ -319,22 +321,45 @@ derive Show FigInfo
     If piece is 'KING', promote may be 'QUEEN' or 'KING' to indicate queenside or kingside castling.
     If it's a promoting 'PAWN' move, promote may be 'KNIGHT', 'BISHOP', 'ROOK' or 'QUEEN'.
     If it's an en passant capturing, promote will be 'PAWN'.
+    
+    > KPfffpppttttttssssss
+    
+    [K] This bit indicates whether this 'Move' caused a cut and is thus a so called killer move.
+    [P] 1 bit for 'Player' where 0 means 'BLACK', 1 means 'WHITE'
+    [fff] 3 bit encoding for moving 'Piece' 
+    [ppp] 3 bit for promotion piece
+    [ssssss] 6 bit source index
+    [tttttt] 6 bit target index, stored last so that when there is more than one killer move from
+             different pieces, their first level hash key will be different with a probability of
+             31/32 
 --}
-data Move = M {!player ∷ Player, !piece, !promote ∷ Piece, !from, !to ∷ Index } where
+newtype Move = M { !int :: Int } {- {!player ∷ Player, !piece, !promote ∷ Piece, !from, !to ∷ Index } -} where
     (==), (!=) ∷ Move → Move → Bool
-    m1 == m2 = m1.player Player.== m2.player 
-            && m1.piece   Piece.== m2.piece
-            && m1.promote Piece.== m2.promote 
-            && m1.from    Index.== m2.from 
-            && m1.to      Index.== m2.to
-    m1 != m2 = m1.player Player.!= m2.player 
-            || m1.piece   Piece.!= m2.piece 
-            || m1.from    Index.!= m2.from 
-            || m1.promote Piece.!= m2.promote
-            || m1.to      Index.!= m2.to
-    hashCode m = ((m.player.hashCode * 31 + m.piece.hashCode) * 31 + m.from.hashCode) * 31 + m.to.hashCode
+    m1 == m2 = m1.int Int.== m2.int 
+    m1 != m2 = m1.int Int.!= m2.int 
+    hashCode m = m.int
+    killer m  = (int m .&. 0x80000) Int.!= 0 
+    player m  = Player.unsafeFrom ((int m `shiftR` 18) .&. 1)
+    piece m   = Piece.unsafeFrom  ((int m `shiftR` 15) .&. 7)
+    promote m = Piece.unsafeFrom  ((int m `shiftR` 12) .&. 7)
+    to m      = Index.unsafeFrom  ((int m `shiftR`  6) .&. 63)
+    from m    = Index.unsafeFrom   (int m              .&. 63)
+    makeKiller  m = M (int m .|. 0x80000)
+    clearKiller m = M (int m .&. 0x7ffff)
+    promoteTo   m p = M ((int m .&. 0xf8fff) .|. (Piece.ordNum  p `shiftL` 12)) 
+
+--- construct a move from 'Player', 'Piece' to move, promotion 'Piece', and from and to 'Index'es
+mkM pl pc pr from to = M (
+            (Player.ordNum pl `shiftL` 18)
+        .|. (Piece.ordNum  pc `shiftL` 15)
+        .|. (Piece.ordNum  pr `shiftL` 12)
+        .|. (Index.ordNum  to `shiftL`  6)
+        .|. (Index.ordNum  from)
+    )
+    
 instance Eq Move
-deriving Show Move
+instance Show Move where
+    show m = algebraic m
 
 --- The players taking part in the game
 data Player = BLACK | WHITE where
@@ -483,10 +508,10 @@ castlingMoves p = case p.turn of
             && not (isAttacked p D8 WHITE || isAttacked p C8 WHITE) -- king does not go through/into check
 
 
-!castlingShortWhite = M{player=WHITE, piece=KING, promote=KING,  from=E1, to=G1} 
-!castlingLongWhite  = M{player=WHITE, piece=KING, promote=QUEEN, from=E1, to=C1}
-!castlingShortBlack = M{player=BLACK, piece=KING, promote=KING,  from=E8, to=G8} 
-!castlingLongBlack  = M{player=BLACK, piece=KING, promote=QUEEN, from=E8, to=C8}
+!castlingShortWhite = mkM WHITE KING KING  E1 G1 
+!castlingLongWhite  = mkM WHITE KING QUEEN E1 C1
+!castlingShortBlack = mkM BLACK KING KING  E8 G8 
+!castlingLongBlack  = mkM BLACK KING QUEEN E8 C8
 
 pieceTargets ∷ FigInfo → Fields
 pieceTargets pc = case pc.piece of 
@@ -514,9 +539,9 @@ addMove !p pc !to !ms = case pc.piece of
                 in
                     if valid 
                         then if promotion 
-                            then fold (\ms x -> move.{promote = x} !: ms) ms promotions
+                            then fold (\ms x -> move.promoteTo x !: ms) ms promotions
                             else if null es && p.empty to -- en passant capturing 
-                                then move.{promote = PAWN} !: ms
+                                then move.promoteTo PAWN !: ms
                                 else move !: ms
                         else ms
         BISHOP → if p.allEmpty (canBishop from to)  then move !: ms else ms
@@ -526,7 +551,7 @@ addMove !p pc !to !ms = case pc.piece of
         other → move !: ms
         
     where
-        !move = M {player = pc.player, piece = pc.piece, promote = EMPTY, from, to}
+        !move = mkM pc.player pc.piece EMPTY from to
         !from = bitIndex pc.wo
 
 --- 'Piece's a 'PAWN' can be promoted into
@@ -709,35 +734,35 @@ whiteToMove ∷ Fields
 --- Move sequences for castlings consist of 3 moves to get the "who is to move" bit right.
 --- Castling rights are taken care of by the ordinary move logic.
 --- Since this happens maybe once in a game, efficiency is less important.
-!whiteShortCastlingMove1 = M{player=WHITE, piece=KING, promote=EMPTY, from=E1, to=F1}
-!whiteShortCastlingMove2 = M{player=WHITE, piece=KING, promote=EMPTY, from=F1, to=G1}
-!whiteShortCastlingMove3 = M{player=WHITE, piece=ROOK, promote=EMPTY, from=H1, to=F1}
+!whiteShortCastlingMove1 = mkM WHITE KING EMPTY E1 F1
+!whiteShortCastlingMove2 = mkM WHITE KING EMPTY F1 G1
+!whiteShortCastlingMove3 = mkM WHITE ROOK EMPTY H1 F1
 whiteShortCastling p =  applyMove 
                             (applyMove 
                                 (applyMove p whiteShortCastlingMove1) 
                                 whiteShortCastlingMove2)
                             whiteShortCastlingMove3
 
-!whiteLongCastlingMove1 = M{player=WHITE, piece=KING, promote=EMPTY, from=E1, to=D1}
-!whiteLongCastlingMove2 = M{player=WHITE, piece=KING, promote=EMPTY, from=D1, to=C1}
-!whiteLongCastlingMove3 = M{player=WHITE, piece=ROOK, promote=EMPTY, from=A1, to=D1}
+!whiteLongCastlingMove1 = mkM WHITE KING EMPTY E1 D1
+!whiteLongCastlingMove2 = mkM WHITE KING EMPTY D1 C1
+!whiteLongCastlingMove3 = mkM WHITE ROOK EMPTY A1 D1
 whiteLongCastling  p =  applyMove 
                             (applyMove 
                                 (applyMove p whiteLongCastlingMove1) 
                                 whiteLongCastlingMove2)
                             whiteLongCastlingMove3
-!blackShortCastlingMove1 = M{player=BLACK, piece=KING, promote=EMPTY, from=E8, to=F8}
-!blackShortCastlingMove2 = M{player=BLACK, piece=KING, promote=EMPTY, from=F8, to=G8}
-!blackShortCastlingMove3 = M{player=BLACK, piece=ROOK, promote=EMPTY, from=H8, to=F8}
+!blackShortCastlingMove1 = mkM BLACK KING EMPTY E8 F8
+!blackShortCastlingMove2 = mkM BLACK KING EMPTY F8 G8
+!blackShortCastlingMove3 = mkM BLACK ROOK EMPTY H8 F8
 blackShortCastling p =  applyMove 
                             (applyMove 
                                 (applyMove p blackShortCastlingMove1) 
                                 blackShortCastlingMove2)
                             blackShortCastlingMove3
 
-!blackLongCastlingMove1 = M{player=BLACK, piece=KING, promote=EMPTY, from=E8, to=D8}
-!blackLongCastlingMove2 = M{player=BLACK, piece=KING, promote=EMPTY, from=D8, to=C8}
-!blackLongCastlingMove3 = M{player=BLACK, piece=ROOK, promote=EMPTY, from=A8, to=D8}
+!blackLongCastlingMove1 = mkM BLACK KING EMPTY E8 D8
+!blackLongCastlingMove2 = mkM BLACK KING EMPTY D8 C8
+!blackLongCastlingMove3 = mkM BLACK ROOK EMPTY A8 D8
 blackLongCastling p = applyMove 
                             (applyMove 
                                 (applyMove p blackLongCastlingMove1) 
