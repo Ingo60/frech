@@ -10,7 +10,7 @@ import frech.Daten
 pieceValue EMPTY  = 0
 pieceValue PAWN   = 100
 pieceValue KNIGHT = 300
-pieceValue BISHOP = 305     -- dont't echange for KNIGHT needlessly
+pieceValue BISHOP = 305     -- dont't exchange for KNIGHT needlessly
 pieceValue ROOK   = 550
 pieceValue QUEEN  = 875
 pieceValue KING   = 1000
@@ -58,7 +58,7 @@ element !p [] = false
 element !p (h:hs) = if p == h then true     -- note p==h || element p hs would not be a tail call! 
     else if h.getPlyCounter > 0 then element p hs else false
 
---- 'Position' value when 'BLACK' is mate.
+--- 'Position' value when 'BLACK' is mate (actually 32767).
 !blackIsMate = 0x7fff
 --- 'Position' value when 'WHITE' is mate.
 !whiteIsMate = -blackIsMate
