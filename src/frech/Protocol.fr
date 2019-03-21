@@ -10,7 +10,7 @@ import Data.HashMap as HM(HashMap)
 
 import frech.Daten
 import frech.FEN(decodeFEN, encodeFEN)
-import frech.Eval(opening)
+import frech.Eval(opening, endgame, blackIsMate)
 
 data Variation = PV { !moves :: [Move], !val :: Int, !nodes :: Int}
 instance Ord Variation where
@@ -69,7 +69,8 @@ data GameState = GS {
                                          This list is shortened only on xboard "undo" commands.
                                          The implementation will refuse to undo the initial 'Position'. -}
         !expected :: Maybe Move     --- The 'Move' we expect the opponent to make
-        !openingMap :: HashMap Position [Move]    --- moves to expect in the opening   
+        !openingMap :: HashMap Position [Move]    --- moves to expect in the opening
+        !killerMoves :: HashMap Move Bool         --- killer 'Move's found during search   
         !state :: State              {-- 
                                         Are we in force mode, playing or thinking?
                                         In 'THINKING' a strategy task will be active. -}      
@@ -304,7 +305,10 @@ protocol strategy gs  = do
                     let spv = if gs.player == WHITE then sortBy (descending _.val) variations 
                                                     else sortBy (ascending _.val) variations
                         pv = case spv of
-                                (pv1:pv2:_) → if coin && abs (pv1.val - pv2.val) < 6 then pv2 else pv1
+                                (pv1:pv2:_) → if coin 
+                                                && abs (pv1.val - pv2.val) < 6 
+                                                && abs pv1.val > blackIsMate - 20  -- dont gamble with mate
+                                                then pv2 else pv1
                                 single -> head spv
                         m = head pv.moves
                         expected = if length pv.moves > 1 then Just $! head (tail pv.moves) else Nothing
@@ -338,7 +342,7 @@ protocol strategy gs  = do
                                 best  = []}
  
 fmt :: Long → String
-fmt = "0x%016L".format
+fmt = "0x%016d".format
 
 checkApplyMove :: Position → Move → Position → IO ()
 checkApplyMove pos1 move pos2 = do
@@ -416,7 +420,7 @@ xboardCommand command gs = do
                         Nothing     → pure gs'
                         Just m 
                           | m == mv = pure gs'
-                          | not (opening p) = pure gs'
+                          | not (endgame p) = pure gs'
                           | otherwise = case HM.lookup p gs.openingMap of
                             Just ems 
                               | mv `notElem` ems →   do 
