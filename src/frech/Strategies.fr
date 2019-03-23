@@ -326,7 +326,7 @@ negaMax !gs !extended !depth !alpha !beta
         !m:moves = case applyMove pos m of
                 !next → case negaMax gs.{history=next!:gs.history} capture d (-beta) (-alpha) of
                     !pv
-                        | pos.getRootDistance == 1,
+                        | false, pos.getRootDistance == 1,
                           traceLn diag = pv
                         | otherwise = if score >= beta 
                             then cpv
@@ -363,7 +363,7 @@ negaMax !gs !extended !depth !alpha !beta
                 !pos →  case negaMax gs.{history=pos!:gs.history} ext (depth-1) (-beta) (-alpha) of
                     !pv → case negate pv.val of
                         !score
-                            | gs.current.getRootDistance == 1,
+                            | false, gs.current.getRootDistance == 1,
                               traceLn diag = best
                             | otherwise = if score >= beta then killerpv
                                 else if (score > alpha)
@@ -374,7 +374,7 @@ negaMax !gs !extended !depth !alpha !beta
                                 cpv = pv.{nodes=best.nodes+pv.nodes,moves=m!:pv.moves,val=score}
                                 diag = "# goN alpha=" ++ show alpha ++ ", beta=" ++ show beta
                                     ++ ", score=" ++ show score ++ (if score > alpha then "!" else " ")
-                                    ++ (if score >= beta then "!!" else "") 
+                                    ++ (if score >= beta then "!" else "") 
                                     ++ " candidate=" ++ joined " "  (map algebraic cpv.moves) 
 
 expectedMoves :: GameState → Maybe [Move]
@@ -417,7 +417,7 @@ strategyNegaMax gs  = do
             then do 
                 cont ← gs.talkPV PV{moves=[head allMoves], val=gs.player.factor*(-9999), nodes=1}
                 if cont then gs.tellNoMore else pure()
-            else  tryMoves gs 3 whiteIsMate blackIsMate  [] allMoves
+            else  tryNega gs 3 whiteIsMate blackIsMate  [] allMoves
                 -- loop gs 3 
     where
         {-
@@ -435,12 +435,12 @@ strategyNegaMax gs  = do
                     else loop gs (d+1)
                 else pure ()
         -}     
-        tryMoves ∷ GameState → Int → Int → Int →  [Variation] → [Move] → IO ()
-        tryMoves gs depth alpha beta pvs [] = if theEndIsNear depth pvs 
+        tryNega ∷ GameState → Int → Int → Int →  [Variation] → [Move] → IO ()
+        tryNega gs depth alpha beta pvs [] = if theEndIsNear depth pvs 
                     then gs.tellNoMore
                     else do
                         gs.tellForget
-                        tryMoves gs (depth+1) whiteIsMate blackIsMate [] (varmoves goodOnes)
+                        tryNega gs (depth+1) whiteIsMate blackIsMate [] (varmoves goodOnes)
             where
                 !sorted   = if gs.player == WHITE
                     then sortBy (descending Variation.val) pvs
@@ -448,27 +448,8 @@ strategyNegaMax gs  = do
                 !goodOnes = {- pruned gs.player -} sorted
                 varmoves ∷ [Variation] → [Move]
                 varmoves pvs = map (head • Variation.moves) pvs
-                relevantWhite ∷ Int → Variation → Bool
-                relevantWhite r x  = x.val >= r
-                relevantBlack ∷ Int → Variation → Bool
-                relevantBlack r x  = x.val <= r
-                pruned ∷ Player → [Variation] → [Variation]
-                pruned c pvs
-                    | length pvs > 10 = if c == WHITE 
-                        then (takeWhile (relevantWhite relevance) pvs)
-                        else (takeWhile (relevantBlack relevance) pvs)
-                    | otherwise = pvs
-                    where
-                        !max = maximum  pvs
-                        !min = minimum  pvs
-                        -- das schlechteste 1/3 soll raus
-                        -- weiß: 100 -100 -->  200/3 - 100 = 66 - 100 = -43   (43..100)
-                        -- schwarz: 100 -100      
-                        !relevance = if c == WHITE 
-                                    then (max.val - min.val) `quot` 3 + min.val
-                                    else max.val - (max.val - min.val) `quot` 3
                 
-        tryMoves gs depth alpha beta pvs ms
+        tryNega gs depth alpha beta pvs ms
             | alpha >= beta = gs.tellNoMore
             | otherwise = do
                 let m = head ms
@@ -480,7 +461,7 @@ strategyNegaMax gs  = do
                     pv' = correctMateDistance (negaMax gs.{history=pos:gs.history} false (depth-1) (-beta) (-alpha))
                     pv = pv'.{moves=m:pv'.moves, val ← (* pos.turn.factor)}
                     score = negate pv'.val
-                    alpha' =  max alpha score
+                    -- alpha' =  max alpha score
                     newKillers = [ m.clearKiller | m ← pv.moves, m.killer ]
                     killerHash = fold (\h\m → h.insert m (abs score)) gs.killerMoves newKillers
                     
@@ -491,7 +472,7 @@ strategyNegaMax gs  = do
                 stdout.flush    
                 continue ← gs.talkPV pv
                 if continue
-                then tryMoves gs.{killerMoves=killerHash} depth alpha' beta (pv:pvs) (tail ms)
+                then tryNega gs.{killerMoves=killerHash} depth alpha beta (pv:pvs) (tail ms)
                 else pure ()
                 {-
             | otherwise = do
@@ -504,6 +485,6 @@ strategyNegaMax gs  = do
                 when (abs nodes >= 0) stdout.flush 
                 continue ← gs.talkPVs vs
                 if continue
-                then tryMoves depth alpha beta gs (vs++pvs) ms'
+                then tryNega depth alpha beta gs (vs++pvs) ms'
                 else pure ()
                 -}
