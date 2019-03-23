@@ -3,7 +3,7 @@ module frech.Strategies where
 
 import frege.control.Concurrent(forkOS, MVar)
 import Data.List(sortBy, maximumBy, minimumBy)
-import Data.HashMap as HM(lookup, insert, HashMap)
+import Data.HashMap as HM(lookup, insert, HashMap, values, keys)
 import Lib.ForkJoin
 
 import frech.Protocol
@@ -384,35 +384,38 @@ expectedMoves gs
     where 
         pos = gs.current
 
-moveRating ∷ Position → HashMap Move Bool → Move → Int
-moveRating pos hash mv = killer + goodCapturing + checking + attacking + badCapturing + castling + pawnMove
+moveRating ∷ Position → HashMap Move Int → Move → Int
+moveRating pos hash mv = killer + goodCapturing + moveHanging + checking + attacking + badCapturing + castling + pawnMove
     where
         rpos = applyMove pos mv
         -- rmoves = moves rpos
         source = whatIsOn pos mv.from
-        target = whatIsOn pos mv.to
+        -- target = whatIsOn pos mv.to
         after  = whatIsOn rpos mv.to
-        vt = pieceValue target.piece
-        killer        = maybe 0 (const 1000) (hash.lookup mv)
-        goodCapturing = if  pieceValue mv.piece - vt > 10           then 10 else 0
+        vt = pieceValue (pos.on (singleton mv.to))
+        killer        = fromMaybe 0 (hash.lookup mv)
+        goodCapturing = if  pieceValue mv.piece < vt-10             then 9  else 0
         castling      = if  mv.piece == KING && mv.promote != EMPTY then 3  else 0
         checking      = if  inCheck rpos rpos.turn                  then 1  else 0
         attacking     = card (pieceTargets source `inter` pos.playerFigures mv.player.opponent)
                             - card (pieceTargets after `inter` rpos.playerFigures mv.player.opponent)  
-        badCapturing  = if pieceValue mv.piece - vt < (-10)         then 1  else 0 
+        badCapturing  = if vt > 0                                   then 1  else 0 
         pawnMove      = if endgame rpos && mv.piece == PAWN 
                             then if mv.promote > EMPTY then 10 else 5 
                             else 0
+        -- if the piece is taken elsewhere, it costs less
+        moveHanging   = if scoreHanging pos mv.from < scoreHanging rpos mv.to then 5 else 0 
 
-orderedMoves ∷ Position → HashMap Move Bool → [Move] → [Move]
-orderedMoves !pos !hash !ms = map fst (sortBy (comparing snd) (zip ms (map (moveRating pos hash) ms))) 
+orderedMoves ∷ Position → HashMap Move Int → [Move] → [Move]
+orderedMoves !pos !hash !ms = map fst (sortBy (descending snd) (zip ms (map (moveRating pos hash) ms))) 
 
 strategyNegaMax ∷ Strategy
 strategyNegaMax gs  = do
-        let allMoves = moves gs.current
+        let suggested = fold (\h\m → insert m 99 h) empty (fromMaybe [] (lookup gs.current gs.openingMap)) 
+            allMoves = orderedMoves gs.current suggested (moves gs.current)
         if length allMoves == 1
             then do 
-                cont ← gs.talkPV PV{moves=[head allMoves], val=0, nodes=1}
+                cont ← gs.talkPV PV{moves=[head allMoves], val=gs.player.factor*(-9999), nodes=1}
                 if cont then gs.tellNoMore else pure()
             else  tryMoves gs 3 whiteIsMate blackIsMate  [] allMoves
                 -- loop gs 3 
@@ -466,18 +469,20 @@ strategyNegaMax gs  = do
                                     else max.val - (max.val - min.val) `quot` 3
                 
         tryMoves gs depth alpha beta pvs ms
-            --| length ms == 1 = do
-            --    cout.put (NoMore gs.sid)
-            --    pure ()
-            | true || gs.cores == 1 = do
+            | alpha >= beta = gs.tellNoMore
+            | otherwise = do
                 let m = head ms
-                    pos = applyMove gs.current m
+                println ("# tryNegaMax "          ++ show depth 
+                                ++ "  checking: " ++ show m
+                                ++ "  killers: "  ++ show (keys gs.killerMoves))
+                stdout.flush
+                let pos = applyMove gs.current m
                     pv' = correctMateDistance (negaMax gs.{history=pos:gs.history} false (depth-1) (-beta) (-alpha))
                     pv = pv'.{moves=m:pv'.moves, val ← (* pos.turn.factor)}
                     score = negate pv'.val
                     alpha' =  max alpha score
                     newKillers = [ m.clearKiller | m ← pv.moves, m.killer ]
-                    killerHash = fold (\h\m → h.insert m true) gs.killerMoves newKillers
+                    killerHash = fold (\h\m → h.insert m (abs score)) gs.killerMoves newKillers
                     
                     
                 println ("# tryNegaMax " ++ show depth ++ " alpha=" ++  show alpha
