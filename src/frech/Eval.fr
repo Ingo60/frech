@@ -100,7 +100,8 @@ eval pos = evalMS pos (moves pos)
 --- Like with 'eval', you need to detect checkmate, stalemate, draw by repetition or by 50 moves rule separately.
 evalMS ∷ Position → [Move] → Int
 evalMS pos mms = (matDelta * ((max matWhite matBlack * 1000) `quot`  min matWhite matBlack)) `quot` 1000
-                    + goHanging  pos pos.figures 0 
+                    + goHanging  pos (pos.playerFigures WHITE) 0
+                    - goHanging  pos (pos.playerFigures BLACK) 0 
                     + forP pos.turn (4 * length mms)
                     + forP pos.turn.opponent (4 * length oms)
                     + forP pos.turn.opponent checkBonus
@@ -261,13 +262,13 @@ goHanging ∷ Position → Fields → Int → Int
 goHanging pos m n
     | null m = n
     | n != 0    = goHanging pos (m `diff` fx) (110 `percent` (min n (scoreHanging pos ix)))
-    | otherwise = goHanging pos (m `diff` fx) (min n (scoreHanging pos ix))
+    | otherwise = goHanging pos (m `diff` fx) (scoreHanging pos ix)
     where
         !ix = bitIndex m
         !fx = singleton ix
---- compute the penalty for  a hanging 'Piece'
+--- compute the penalty for a hanging 'Piece', at most 0 when the piece is not in danger
 scoreHanging ∷ Position → Index → Int
-scoreHanging pos ix =  fi.player.factor * discounted 
+scoreHanging pos ix =  discounted 
     where
         !fi = whatIsOn pos ix
         !active = fi.player == pos.turn 
