@@ -1,0 +1,12 @@
+import frech.Daten
+import frech.Eval
+import frech.FEN
+import frech.Protocol
+import frech.Strategies
+
+gs = initialGS.performUnsafe
+
+foldMVs pos mvs = foldM mkMove pos mvs 
+mkMove p a = applyMove p <$> case unAlgebraic (moves p) a of Just m -> Right m; _ -> Left a
+
+ 
