@@ -780,7 +780,7 @@ applyMove !p !m
         ordinary ∷ Move → Position → Position
         ordinary m p = P{flags, whites, pawnSet, bishopSet, rookSet, hash} where
             flags = tomove  `union` castlingRights
-                            `union` hasCastledInfo
+                            `union` hasCastledFlags
                             `union` enPassantBits 
                             `union` plies 
             !hash = p.hash 
@@ -823,13 +823,12 @@ applyMove !p !m
                                             else if m.to == A1 then singleton C1
                                             else if m.to == H1 then singleton G1
                                             else empty
-            !hasCastledInfo = if m.piece == KING 
-                then if m.player == WHITE
-                    then     if m.from == E1 && m.to == G1 then singleton F1
-                        else if m.from == E1 && m.to == C1 then singleton D1 else empty
-                    else     if m.from == E8 && m.to == G8 then singleton F8
-                    else     if m.from == E8 && m.to == C8 then singleton D8 else empty
-                else empty
+            !hasCastledFlags = (p.flags `inter` Position.castlingDoneBits) `union` gainedCastling
+            !gainedCastling = if m.piece == KING 
+                    then if m.from == E1 && m.to == G1 then singleton F1
+                    else if m.from == E1 && m.to == C1 then singleton D1 else empty
+                    else if m.from == E8 && m.to == G8 then singleton F8
+                    else if m.from == E8 && m.to == C8 then singleton D8 else empty
                 
             !enPassantBits = if m.piece == PAWN
                 then if m.player == WHITE
