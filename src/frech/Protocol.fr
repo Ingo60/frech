@@ -12,7 +12,12 @@ import frech.Daten
 import frech.FEN(decodeFEN, encodeFEN)
 import frech.Eval(opening, endgame, blackIsMate)
 
-data Variation = PV { !moves :: [Move], !val :: Int, !nodes :: Int}
+
+data Transposition = TR { !depth, !score :: Int, !moves:: [Move] }
+
+type TranspositionTable = HashMap Position Transposition
+
+data Variation = PV { !moves :: [Move], !val :: Int, !nodes :: Int, !depth :: Int, !hash :: TranspositionTable}
 instance Ord Variation where
     hashCode pv = 0
     pv1 < pv2 = pv1.val < pv2.val
@@ -21,7 +26,8 @@ instance Ord Variation where
     pv1 <=> pv2 = pv1.val <=> pv2.val
     max pv1 pv2 = if pv1 > pv2 then pv1 else pv2
     min pv1 pv2 = if pv1 < pv2 then pv1 else pv2
-deriving Show Variation
+instance Show Variation where
+    show pv = show pv.depth ++ "  " ++ show pv.val ++ "  " ++ joined " " (map algebraic pv.moves)
 
 --- A bit cheaper than
 --- > maximum vs 
@@ -202,7 +208,7 @@ protocol strategy gs  = do
                                         ++ "ms, continue=" ++ show continue)
                             now ← System.currentTimeMillis ()
                             mapM_ (\pv -> println (
-                                    " " ++ show (maximum (map (length . _.moves) (pvs++gs.best)))   -- depth
+                                    " " ++ show pv.depth
                                 ++  " " ++ show (if gs.player == BLACK 
                                                     then negate pv.val
                                                     else pv.val)     -- score in centipawns
