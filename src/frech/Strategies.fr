@@ -19,7 +19,7 @@ initialGS = do
     tvar ← MVar.newEmpty
     ivar ← MVar.newEmpty
     pure GS{history=[initialBoard], state=FORCED, player=BLACK, cores=2, name="unknown", 
-            rvar, tvar, ivar, sid=0, best=[], backup=[], expected = Nothing,
+            rvar, tvar, ivar, sid=0, best=[], backup=[], plan = Nothing,
             openingMap = empty, killerMoves = empty,
             tc = TC{myTime=60000, oTime=60000, lvlMoves=40, lvlTime=600000, lvlIncr=5000}} 
 
@@ -426,7 +426,21 @@ strategyNegaMax gs  = do
             then do 
                 cont ← gs.talkPV PV{moves=[head allMoves], val=gs.player.factor*(-9999), nodes=1, depth=1, hash=empty}
                 if cont then gs.tellNoMore else pure()
-            else  tryNega gs empty 3 whiteIsMate blackIsMate  [] allMoves
+            else  case gs.plan of 
+                Just PV{depth,val,moves=_:_:planmv:_} | val * gs.player.factor > 50 = do
+                        let pos = applyMove gs.current planmv
+                            pv' = correctMateDistance (negaMax gs.{history=pos:gs.history} empty false depth whiteIsMate blackIsMate)
+                            pv = pv'.{moves=planmv:pv'.moves, val ← (* pos.turn.factor)}
+                        if gs.player == WHITE && pv.val > val || gs.player == BLACK && pv.val < val
+                        then do
+                            gs.talkPV pv
+                            gs.tellNoMore
+                        else do
+                            cont ← gs.talkPV pv
+                            if cont 
+                                then tryNega gs pv.hash 3 whiteIsMate blackIsMate  [] (filter (!=planmv) allMoves)
+                                else pure ()
+                other → tryNega gs empty 3 whiteIsMate blackIsMate  [] allMoves
                 -- loop gs 3 
     where
         {-

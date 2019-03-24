@@ -74,7 +74,7 @@ data GameState = GS {
                                         
                                          This list is shortened only on xboard "undo" commands.
                                          The implementation will refuse to undo the initial 'Position'. -}
-        !expected :: Maybe Move     --- The 'Move' we expect the opponent to make
+        !plan :: Maybe Variation    --- The 'Variation' we are playing. 2nd entry is expected opponent move, 3rd our continuation
         !openingMap :: HashMap Position [Move]    --- moves to expect in the opening
         !killerMoves :: HashMap Move Int --- killer 'Move's found during search   
         !state :: State              {-- 
@@ -241,7 +241,7 @@ protocol strategy gs  = do
                         gs.rvar.put true 
                         case xboard of
                             m~'^\s*ping\s+(\d+)' → do
-                                let p = maybe [] (pure . String.atoi) (m.group 1) 
+                                -- let p = maybe [] (pure . String.atoi) (m.group 1) 
                                 -- protocol strategy gs.{pings <- (p++)}
                                 protocol strategy gs
                             '^\s*(force|result)\b' → do
@@ -325,7 +325,7 @@ protocol strategy gs  = do
                                                 then pv2 else pv1
                                 single -> head spv
                         m = head pv.moves
-                        expected = if length pv.moves > 1 then Just $! head (tail pv.moves) else Nothing
+                        -- expected = if length pv.moves > 1 then Just $! head (tail pv.moves) else Nothing
                         pos = applyMove gs.current m
                         ms  = moves pos
                         mate = null ms && inCheck pos pos.turn
@@ -351,7 +351,7 @@ protocol strategy gs  = do
                     when (repetition) do  println "1/2-1/2 {repetition}"
                     stdout.flush
                     -- pong gs.pings
-                    pure  gs.{history ← (pos.clearRootPlyCounter:), sid ← succ, expected,
+                    pure  gs.{history ← (pos.clearRootPlyCounter:), sid ← succ, plan=Just pv,
                                 state = if finished then FORCED else PLAYING,
                                 best  = []}
  
@@ -425,27 +425,27 @@ xboardCommand command gs = do
                     pure gs
               Just mv → do
                     let pos = applyMove p mv
-                        gs' = gs.{history ← (pos.clearRootPlyCounter:), sid ← succ, expected = Nothing}
+                        gs' = gs.{history ← (pos.clearRootPlyCounter:), sid ← succ}
                     --println ("# after " ++ show mv)
                     --println ("# " ++ show (whatIsOn pos mv.from))
                     --println ("# " ++ show (whatIsOn pos mv.to))
                     checkApplyMove p mv pos
-                    case gs.expected of 
-                        Nothing     → pure gs'
-                        Just m 
-                          | m == mv = pure gs'
-                          | not (endgame p) = pure gs'
-                          | otherwise = case HM.lookup p gs.openingMap of
-                            Just ems 
-                              | mv `notElem` ems →   do 
-                                appendFile ("data/opening-" ++ (show gs.player).toLowerCase)
-                                    (algebraic mv ++ " " ++ encodeFEN p ++ "\n")
-                                pure gs'.{openingMap ← HM.insert p (mv:ems)}
-                              | otherwise = pure gs'    -- we know this one already
-                            Nothing → do
-                                appendFile ("data/opening-" ++ (show gs.player).toLowerCase)
-                                    (algebraic mv ++ " " ++ encodeFEN p ++ "\n")
-                                pure gs'.{openingMap ← HM.insert p [mv]}                         
+                    case gs.plan of 
+                        Just PV{moves=_:expected:_}
+                            | expected == mv → pure gs'        -- current plan holds
+                            | endgame p      → pure gs'.{plan=Nothing}
+                            | otherwise = case HM.lookup p gs.openingMap of
+                                Just ems 
+                                  | mv `notElem` ems →   do 
+                                    appendFile ("data/opening-" ++ (show gs.player).toLowerCase)
+                                        (algebraic mv ++ " " ++ encodeFEN p ++ "\n")
+                                    pure gs'.{openingMap ← HM.insert p (mv:ems), plan=Nothing}
+                                  | otherwise = pure gs'    -- we know this one already
+                                Nothing → do
+                                    appendFile ("data/opening-" ++ (show gs.player).toLowerCase)
+                                        (algebraic mv ++ " " ++ encodeFEN p ++ "\n")
+                                    pure gs'.{openingMap ← HM.insert p [mv], plan=Nothing}
+                        sonst → pure gs'.{plan=Nothing}                         
 
         -- result 
         '^\s*result ' -> pure gs.{state=FORCED}
