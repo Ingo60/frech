@@ -3,6 +3,8 @@ import frech.Eval
 import frech.FEN
 import frech.Protocol
 import frech.Strategies
+import Data.HashMap
+import Data.JSON(toJSON)
 
 gs = initialGS.performUnsafe
 
