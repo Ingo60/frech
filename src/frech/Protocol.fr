@@ -6,14 +6,21 @@ import Control.Concurrent(MVar, forkIO, forkOS)
 import System.Random(randomIO)
 import Data.List(sortBy)
 import Data.Bits(.^.)
-import Data.HashMap as HM(HashMap)
+import Data.HashMap as HM(HashMap, values)
+import Data.JSON(ToJSON, struct, Struct, assoc)
 
 import frech.Daten
 import frech.FEN(decodeFEN, encodeFEN)
 import frech.Eval(opening, endgame, blackIsMate)
 
 
+
 data Transposition = TR { !depth, !score :: Int, !moves:: [Move], !useful :: Int }
+instance ToJSON Transposition where
+    toJSON tr = Struct [assoc "depth" tr.depth, 
+                        assoc "score" tr.score, 
+                        assoc "moves" tr.moves, 
+                        assoc "useful" tr.useful]
 
 type TranspositionTable = HashMap Position Transposition
 
@@ -76,7 +83,8 @@ data GameState = GS {
                                          The implementation will refuse to undo the initial 'Position'. -}
         !plan :: Maybe Variation    --- The 'Variation' we are playing. 2nd entry is expected opponent move, 3rd our continuation
         !openingMap :: HashMap Position [Move]    --- moves to expect in the opening
-        !killerMoves :: HashMap Move Int --- killer 'Move's found during search   
+        !killerMoves :: HashMap Move Int --- killer 'Move's found during search
+        !nodes :: Int                    --- counter for nodes searched   
         !state :: State              {-- 
                                         Are we in force mode, playing or thinking?
                                         In 'THINKING' a strategy task will be active. -}      
@@ -156,11 +164,11 @@ reader cvar dvar = do
 protocol :: Strategy → GameState → IO ()
 protocol strategy gs  = do
         let (hma, hmb, _) = HashMap.collisions gs.openingMap
-        println ("# protocol state=" ++ gs.state.show ++ ", player=" ++ gs.player.show
-                    -- ". cores=" ++ show gs.cores
-                    ++ " collision nodes=" ++ show hma
-                    ++ " collision keys=" ++ show hmb)
-        stdout.flush
+        --println ("# protocol state=" ++ gs.state.show ++ ", player=" ++ gs.player.show
+        --            -- ". cores=" ++ show gs.cores
+        --            ++ " collision nodes=" ++ show hma
+        --            ++ " collision keys=" ++ show hmb)
+        --stdout.flush
         
         case gs.state of
             TERMINATED → pure ()
@@ -188,8 +196,8 @@ protocol strategy gs  = do
                         sendMove gs >>= protocol strategy
                     Just EOF → do
                         println "# EOF on standard input while thinking!?" >> stdout.flush
-                        gs.tvar.offer false 
-                        -- pong gs.pings
+                        gs.tvar.offer false
+                        finishThinking () 
                         pure ()
                     Just (Forget sid)
                         | sid == gs.sid = do
@@ -201,7 +209,7 @@ protocol strategy gs  = do
                         | id == gs.sid = do
                             now ← System.currentTimeMillis ()
                             let continue = (now - since) < (9 * gs.timePerMove) `quot` 10
-                                nodes = fold (+) (sum (map _.nodes gs.best)) (map _.nodes pvs)
+                                nodes = fold (+) gs.nodes (map _.nodes pvs)
                             gs.tvar.put continue
                             println ("# we have used " ++ show (now-since) 
                                         ++ "ms of "    ++ show (gs.timePerMove)
@@ -209,26 +217,25 @@ protocol strategy gs  = do
                             now ← System.currentTimeMillis ()
                             mapM_ (\pv -> println (
                                     " " ++ show pv.depth
-                                ++  " " ++ show (if gs.player == BLACK 
-                                                    then negate pv.val
-                                                    else pv.val)     -- score in centipawns
-                                ++   " " ++ show ((now - since) `quot` 10)  -- time  in centiseconds
+                                ++  " " ++ show (gs.player.factor * pv.val)     -- score in centipawns
+                                ++   " " ++ show ((now - since + 5) `quot` 10)  -- time  in centiseconds
                                 ++   " " ++ show nodes                    -- nodes
-                                ++   " " ++ joined " " (map algebraic pv.moves))) pvs
+                                ++   " " ++ show (fold (+) 0 (map _.useful (values pv.hash)))
+                                ++  "\t" ++ joined " " (map algebraic pv.moves))) pvs
                             stdout.flush
                             let best' = pvs ++ filter (
                                     \p → head p.moves `notElem` map (head . _.moves) pvs) gs.best
                                 best = map (_.{hash=empty}) best'    
                             if continue 
-                                then protocol strategy gs.{best}
-                                else finishThinking () >> sendMove gs.{best} >>= protocol strategy
+                                then protocol strategy gs.{best, nodes}
+                                else finishThinking () >> sendMove gs.{best, nodes=0} >>= protocol strategy
                         | otherwise = do
                             println "# ignoring move from previous strategy instance." >> stdout.flush
                             protocol strategy gs
                     Just (NoMore id)
                         | id == gs.sid = do
                             println "# No more moves." >> stdout.flush 
-                            sendMove gs >>= protocol strategy
+                            sendMove gs.{nodes=0} >>= protocol strategy
                         | otherwise = do
                             println "# ignoring NoMore from previous strategy instance." >> stdout.flush
                             protocol strategy gs
@@ -236,6 +243,7 @@ protocol strategy gs  = do
                     -- we accept ping, force, new, quit, result and ?
                     Just (Line 's*quit\b') → do
                         gs.tvar.offer false
+                        finishThinking ()
                         gs.rvar.put false
                         pure ()
                     Just (Line xboard) → do
@@ -246,14 +254,15 @@ protocol strategy gs  = do
                                 -- protocol strategy gs.{pings <- (p++)}
                                 protocol strategy gs
                             '^\s*(force|result)\b' → do
-                                gs.tvar.offer false 
+                                gs.tvar.offer false
+                                finishThinking () 
                                 -- pong gs.pings
-                                protocol strategy gs.{state=FORCED, best=[], backup=[]}
+                                protocol strategy gs.{state=FORCED, best=[], backup=[], nodes=0}
                             '^\s*new\b' → do
                                 gs.tvar.offer false 
-                                -- pong gs.pings
+                                finishThinking ()
                                 protocol strategy gs.{history=[initialBoard], best=[], backup=[],
-                                                     state=PLAYING, player=BLACK}
+                                                     nodes=0, state=PLAYING, player=BLACK}
                             "?" → sendMove gs >>= protocol strategy
                             other → do
                                 println ("Error (command not legal now): " ++ xboard)
@@ -271,12 +280,12 @@ protocol strategy gs  = do
             then do
                 println "# thinking finds game that has ended"
                 stdout.flush
-                pure gs.{state=FORCED, best=[], backup=[]}
+                pure gs.{state=FORCED, best=[], backup=[], nodes=0}
             else do
                 now ← System.currentTimeMillis ()
                 mv  ← MVar.newEmpty
                 beginThinking ()
-                let gs' = gs.{state=THINKING now, best=[], backup=[], tvar=mv}
+                let gs' = gs.{state=THINKING now, best=[], backup=[], tvar=mv, nodes=0}
                 forkIO (strategy gs')
                 pure gs'
         commandProcessing cmd = case cmd of
@@ -375,8 +384,8 @@ checkApplyMove pos1 move pos2 = do
 
 xboardCommand ∷ String → GameState → IO GameState
 xboardCommand command gs = do
-    println ("# xboardCommand: " ++ command)
-    stdout.flush
+    --println ("# xboardCommand: " ++ command)
+    --stdout.flush
     gs.rvar.put  (command !~ '^\s*quit\b') 
     case command of
         '^\s*(accepted|rejected|xboard|random|hard|easy|post)\b'    
@@ -391,7 +400,7 @@ xboardCommand command gs = do
         '^\s*protover '     → do
             println ("feature myname=\"frech " ++ gs.name ++ "\"")
             println ("feature ping=0 setboard=1 playother=1 usermove=1 draw=0 "
-                        ++ "sigint=0 analyze=0 variants=\"normal\" colors=0 nps=0 "
+                        ++ "sigint=0 analyze=1 variants=\"normal\" colors=0 nps=0 "
                         ++ "debug=1 memory=0 smp=1 "
                         ++ "done=1")
             stdout.flush
@@ -413,7 +422,7 @@ xboardCommand command gs = do
                     pure gs.{history=[p], state=FORCED, best=[]}
         -- user makes a move
         '^\s*usermove\s+\w+\b' → do
-            println "# in usermove"
+            -- println "# in usermove"
             stdout.flush
             let p    = head gs.history
                 alg  = command.replaceFirst '^\s*usermove\s+' ""

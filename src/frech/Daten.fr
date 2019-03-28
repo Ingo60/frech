@@ -11,7 +11,7 @@ import Data.Bits public (BitSet.union union,
                     BitSet.intersection inter,
                     -- BitSet.singleton singleton
                     )
-
+import Data.JSON(ToJSON, String)
 infixl 13 union diff
 infixl 14 inter
 
@@ -348,6 +348,7 @@ newtype Move = M { !int :: Int } {- {!player ∷ Player, !piece, !promote ∷ Pi
     clearKiller m = M (int m .&. 0x7ffff)
     promoteTo   m p = M ((int m .&. 0xf8fff) .|. (Piece.ordNum  p `shiftL` 12)) 
 
+
 --- construct a move from 'Player', 'Piece' to move, promotion 'Piece', and from and to 'Index'es
 mkM pl pc pr from to = M (
             (Player.ordNum pl `shiftL` 18)
@@ -360,6 +361,9 @@ mkM pl pc pr from to = M (
 instance Eq Move
 instance Show Move where
     show m = algebraic m
+
+instance ToJSON Move where
+    toJSON mv = String (algebraic mv)
 
 --- The players taking part in the game
 data Player = BLACK | WHITE where

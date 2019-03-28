@@ -1,5 +1,7 @@
 --- various Strategies, and a main function that selects one
-module frech.Strategies where
+module frech.Strategies
+    inline (enter) 
+    where
 
 import frege.control.Concurrent(forkOS, MVar)
 import Data.List(sortBy, maximumBy, minimumBy)
@@ -19,7 +21,7 @@ initialGS = do
     tvar ← MVar.newEmpty
     ivar ← MVar.newEmpty
     pure GS{history=[initialBoard], state=FORCED, player=BLACK, cores=2, name="unknown", 
-            rvar, tvar, ivar, sid=0, best=[], backup=[], plan = Nothing,
+            rvar, tvar, ivar, sid=0, best=[], backup=[], nodes=0, plan = Nothing,
             openingMap = empty, killerMoves = empty,
             tc = TC{myTime=60000, oTime=60000, lvlMoves=40, lvlTime=600000, lvlIncr=5000}} 
 
@@ -313,6 +315,8 @@ alphaBeta !extended !hist !d !alpha !beta !m
                 else case alphaBeta ext hist (depth-1) alpha best.val m of 
                     next → go ext depth  player alpha best.val  hist  (min best next).{nodes = best.nodes + next.nodes} ms
 
+--- a 'Variation' that must be replaced by any other in the 'negaMax' loop (even by mate)
+!noPV = PV [] (whiteIsMate*2) 0 0 empty
 
 negaMax :: GameState → TranspositionTable → Bool → Int → Int → Int → Variation
 negaMax !gs !transp !extended !depth !alpha !beta
@@ -321,30 +325,16 @@ negaMax !gs !transp !extended !depth !alpha !beta
     | pos `element` tail gs.history  = PV [] 0 1 depth transp
     | depth == 0                = PV [] (pos.turn.factor * evalMS pos (moves pos)) 1 depth transp
     | Just !te ← lookup pos transp,
-      te.depth >= depth         = PV{moves=te.moves, val=te.score, nodes=1, depth, 
-                                                    hash=insert pos te.{useful = te.useful+1} transp} 
-    | otherwise                 = case fromMaybe (oms gs pos depth) (lookup pos gs.openingMap) of
-        !m:moves = case applyMove pos m of
-                !next → case negaMax gs.{history=next!:gs.history} transp capture d (-beta) (-alpha) of
-                    !pv
-                        | false, pos.getRootDistance == 1,
-                          traceLn diag = pv
-                        | otherwise = if score >= beta 
-                            then enter pos cpv pv.hash
-                            else go gs extended depth (max alpha score) beta (enter pos cpv pv.hash) moves
-                        where
-                            !score = negate pv.val 
-                            !cpv = PV (m:pv.moves) score pv.nodes depth pv.hash -- candidate pv
-                            diag = "# go0 alpha=" ++ show alpha ++ ", beta=" ++ show beta
-                                    ++ ", score=" ++ show score 
-                                    ++ ", candidate=" ++ joined " "  (map algebraic cpv.moves)
-                    where
-                            capture = not extended &&  depth == 1 && not (pos.empty m.to) 
-                            d = if capture then depth else depth-1 
- 
-        []
-            | check                         = PV [] whiteIsMate 1 depth empty
-            | otherwise                     = PV [] 0           1 depth empty
+      te.depth >= depth         = case TR{depth=te.depth, score=te.score, moves=te.moves, useful=te.useful+1} of
+                                    !tr → PV{moves=te.moves, val=te.score, nodes=1, depth, 
+                                                    hash=insert pos tr transp} 
+    | otherwise                 = 
+        case fromMaybe (oms gs pos depth) (lookup pos gs.openingMap) of
+            !ms@(_:_) → case go gs transp extended depth alpha beta noPV ms of
+                    !pv → enter pos pv pv.hash
+            []
+                | check                         = PV [] whiteIsMate 1 depth transp
+                | otherwise                     = PV [] 0           1 depth transp
                  
                                         
     where
@@ -355,26 +345,28 @@ negaMax !gs !transp !extended !depth !alpha !beta
         oms ∷ GameState → Position → Int → [Move]
         oms gs pos depth = if depth > 1 then orderedMoves pos gs.killerMoves (moves pos) else moves pos
         
-        go ∷ GameState → Bool → Int → Int → Int → Variation → [Move] → Variation
-        go !gs !ext !depth !alpha !beta !best [] = best
-        go !gs !ext !depth !alpha !beta !best (m:ms) 
+        go ∷ GameState → TranspositionTable → Bool → Int → Int → Int → Variation → [Move] → Variation
+        go !gs !transp  !ext !depth !alpha !beta !best [] = best
+        go !gs !transp  !ext !depth !alpha !beta !best (m:ms) 
             -- | otherwise 
             = case applyMove gs.current m of
-                !pos → case negaMax gs.{history=pos!:gs.history} best.hash capture d (-beta) (-alpha) of
+                !pos → case negaMax gs.{history=pos!:gs.history} transp capture d (-beta) (-alpha) of
                   !pv → case negate pv.val of
                     !score
                         | false, gs.current.getRootDistance == 1,
                           traceLn diag = best
-                        | otherwise = if score >= beta then enter gs.current killerpv pv.hash 
-                            else if (score > alpha)
-                                then go gs ext depth score beta (enter gs.current cpv pv.hash) ms
-                                else go gs ext depth alpha beta best.{nodes=best.nodes+pv.nodes, hash=pv.hash} ms
+                        | otherwise = if score >= beta then killerpv 
+                            else if (score > alpha || score > best.val)
+                                then go gs pv.hash ext depth (max score alpha) beta cpv ms
+                                else go gs pv.hash ext depth alpha beta best' ms
                         where
                             killerpv = pv.{nodes=best.nodes+pv.nodes,moves=m.makeKiller!:pv.moves,val=score}
                             cpv = pv.{nodes=best.nodes+pv.nodes,moves=m!:pv.moves,val=score}
+                            best' = best.{nodes=best.nodes+pv.nodes, hash=pv.hash}
                             diag = "# goN alpha=" ++ show alpha ++ ", beta=" ++ show beta
                                 ++ ", score=" ++ show score ++ (if score > alpha then "!" else " ")
-                                ++ (if score >= beta then "!" else "") 
+                                ++ (if score >= beta then "!" else "")
+                                ++ (if score <= pv.val then "?" else "")
                                 ++ " candidate=" ++ joined " "  (map algebraic cpv.moves)
                   where
                     capture = not ext &&  depth == 1 && not (gs.current.empty m.to) 
@@ -382,10 +374,7 @@ negaMax !gs !transp !extended !depth !alpha !beta
                      
 
 enter:: Position → Variation → TranspositionTable → Variation
-enter !pos !pv !tt = 
-    if pos.getRootDistance >= 2   -- Nf3 e5 Bb5  vs. Bf5 e5 Nf3 
-        then pv.{hash = insert pos TR{depth=length pv.moves, score=pv.val, moves=pv.moves, useful=0} tt}
-        else pv
+enter !pos !pv !tt = pv.{hash = insert pos TR{depth=length pv.moves, score=pv.val, moves=pv.moves, useful=0} tt}
 
 
 expectedMoves :: GameState → Maybe [Move]
@@ -484,6 +473,7 @@ strategyNegaMax gs  = do
                 varmoves pvs = map (head • Variation.moves) pvs
                 
         tryNega gs hash depth alpha beta pvs ms
+            | stopThinking = pure ()
             | alpha >= beta = gs.tellNoMore
             | otherwise = do
                 let m = head ms
