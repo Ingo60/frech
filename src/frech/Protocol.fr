@@ -13,7 +13,7 @@ import frech.FEN(decodeFEN, encodeFEN)
 import frech.Eval(opening, endgame, blackIsMate)
 
 
-data Transposition = TR { !depth, !score :: Int, !moves:: [Move] }
+data Transposition = TR { !depth, !score :: Int, !moves:: [Move], !useful :: Int }
 
 type TranspositionTable = HashMap Position Transposition
 
@@ -216,8 +216,9 @@ protocol strategy gs  = do
                                 ++   " " ++ show nodes                    -- nodes
                                 ++   " " ++ joined " " (map algebraic pv.moves))) pvs
                             stdout.flush
-                            let best = pvs ++ filter (
-                                    \p → head p.moves `notElem` map (head . _.moves) pvs) gs.best    
+                            let best' = pvs ++ filter (
+                                    \p → head p.moves `notElem` map (head . _.moves) pvs) gs.best
+                                best = map (_.{hash=empty}) best'    
                             if continue 
                                 then protocol strategy gs.{best}
                                 else finishThinking () >> sendMove gs.{best} >>= protocol strategy

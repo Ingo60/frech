@@ -23,17 +23,17 @@ initialGS = do
             openingMap = empty, killerMoves = empty,
             tc = TC{myTime=60000, oTime=60000, lvlMoves=40, lvlTime=600000, lvlIncr=5000}} 
 
-main [] = main ["best"]            
+main [] = main ["negamax"]            
 main [arg] = do
     gs ← initialGS
     forkOS (reader gs.rvar gs.ivar)
     let strategy = case arg of
-            "best"      → strategyBest
-            "first"     → strategyFirst
-            "resign"    → strategyResign
-            "minimax"   → strategyMiniMax
-            "ab"        → strategyAlphaBeta
-            "negamax"   → strategyNegaMax
+            'best'      → strategyBest
+            'first'     → strategyFirst
+            'resign'    → strategyResign
+            'minimax'   → strategyMiniMax
+            'ab'        → strategyAlphaBeta
+            'nega'      → strategyNegaMax
             _           → strategyResign
     let f = File.new "./data"
     c ← f.isDirectory
@@ -57,9 +57,9 @@ initOpeningMap p hm = do
 
 loopReader :: String → Int -> MutableIO BufferedReader → HashMap Position [Move] -> IO (HashMap Position [Move])
 loopReader fn !ln rdr hm = do
-    line ← rdr.getLine
-    case '\s+'.splitted line of
-        args@[alg, fen1, fen2, fen3, fen4, fen5, fen6] -> 
+    line ← rdr.readLine
+    case '\s+'.splitted <$> line of
+        Just args | [alg, fen1, fen2, fen3, fen4, fen5, fen6] ← args -> 
             case decodeFEN (joined " " (tail args)) of
                 Right pos → do
                     let valid = moves pos
@@ -75,11 +75,12 @@ loopReader fn !ln rdr hm = do
                 Left msg → do
                     println ("# illegal FEN (" ++ msg ++ ") in "  ++ fn ++ " line " ++ show ln)
                     loopReader fn (ln+1) rdr hm
-        _ -> do
+        Just _ -> do
             println ("# ignoring line " ++ show ln ++ " of file " ++ fn 
                 ++ ", it doesn't have 7 space separated fields.")
-            loopReader fn (ln+1) rdr hm 
-  `catch` (\(some::EOFException) → pure hm)
+            loopReader fn (ln+1) rdr hm
+        Nothing -> pure hm 
+  -- `catch` (\(some::EOFException) → pure hm)
 
 --- a template for new strategies
 strategyTemplate ∷ Strategy
@@ -315,22 +316,22 @@ alphaBeta !extended !hist !d !alpha !beta !m
 
 negaMax :: GameState → TranspositionTable → Bool → Int → Int → Int → Variation
 negaMax !gs !transp !extended !depth !alpha !beta
-    | stopThinking              =  PV [] 0 1 depth empty 
-    | pos.getPlyCounter >= 100  =  PV [] 0 1 depth empty
-    | pos `element` tail gs.history  = PV [] 0 1 depth empty
-    | depth == 0                = PV [] (pos.turn.factor * evalMS pos (moves pos)) 1 depth empty 
+    | stopThinking              =  PV [] 0 1 depth transp 
+    | pos.getPlyCounter >= 100  =  PV [] 0 1 depth transp
+    | pos `element` tail gs.history  = PV [] 0 1 depth transp
+    | depth == 0                = PV [] (pos.turn.factor * evalMS pos (moves pos)) 1 depth transp
+    | Just !te ← lookup pos transp,
+      te.depth >= depth         = PV{moves=te.moves, val=te.score, nodes=1, depth, 
+                                                    hash=insert pos te.{useful = te.useful+1} transp} 
     | otherwise                 = case fromMaybe (oms gs pos depth) (lookup pos gs.openingMap) of
         !m:moves = case applyMove pos m of
-                !next →  case lookup pos transp of
-                  Just !te
-                    | te.depth >= depth = PV{moves=te.moves, val=te.score, nodes=1, depth, hash=transp}
-                  _  → case negaMax gs.{history=next!:gs.history} transp capture d (-beta) (-alpha) of
+                !next → case negaMax gs.{history=next!:gs.history} transp capture d (-beta) (-alpha) of
                     !pv
                         | false, pos.getRootDistance == 1,
                           traceLn diag = pv
                         | otherwise = if score >= beta 
-                            then enter next cpv pv.hash
-                            else enter next (go gs extended depth (max alpha score) beta cpv moves) pv.hash
+                            then enter pos cpv pv.hash
+                            else go gs extended depth (max alpha score) beta (enter pos cpv pv.hash) moves
                         where
                             !score = negate pv.val 
                             !cpv = PV (m:pv.moves) score pv.nodes depth pv.hash -- candidate pv
@@ -339,7 +340,7 @@ negaMax !gs !transp !extended !depth !alpha !beta
                                     ++ ", candidate=" ++ joined " "  (map algebraic cpv.moves)
                     where
                             capture = not extended &&  depth == 1 && not (pos.empty m.to) 
-                            d = if capture then depth+1 else depth-1 
+                            d = if capture then depth else depth-1 
  
         []
             | check                         = PV [] whiteIsMate 1 depth empty
@@ -359,30 +360,31 @@ negaMax !gs !transp !extended !depth !alpha !beta
         go !gs !ext !depth !alpha !beta !best (m:ms) 
             -- | otherwise 
             = case applyMove gs.current m of
-                !pos →  case lookup pos best.hash of
-                  Just !te
-                    | te.depth >= depth = PV{moves=te.moves, val=negate te.score, nodes=1, depth, hash=best.hash}
-                  _ -> case negaMax gs.{history=pos!:gs.history} best.hash ext (depth-1) (-beta) (-alpha) of
-                      !pv → case negate pv.val of
-                        !score
-                            | false, gs.current.getRootDistance == 1,
-                              traceLn diag = best
-                            | otherwise = if score >= beta then killerpv
-                                else if (score > alpha)
-                                    then go gs ext depth score beta cpv ms
-                                    else go gs ext depth alpha beta best.{nodes=best.nodes+pv.nodes, hash=pv.hash} ms
-                            where
-                                killerpv = pv.{nodes=best.nodes+pv.nodes,moves=m.makeKiller!:pv.moves,val=score}
-                                cpv = pv.{nodes=best.nodes+pv.nodes,moves=m!:pv.moves,val=score}
-                                diag = "# goN alpha=" ++ show alpha ++ ", beta=" ++ show beta
-                                    ++ ", score=" ++ show score ++ (if score > alpha then "!" else " ")
-                                    ++ (if score >= beta then "!" else "") 
-                                    ++ " candidate=" ++ joined " "  (map algebraic cpv.moves) 
+                !pos → case negaMax gs.{history=pos!:gs.history} best.hash capture d (-beta) (-alpha) of
+                  !pv → case negate pv.val of
+                    !score
+                        | false, gs.current.getRootDistance == 1,
+                          traceLn diag = best
+                        | otherwise = if score >= beta then enter gs.current killerpv pv.hash 
+                            else if (score > alpha)
+                                then go gs ext depth score beta (enter gs.current cpv pv.hash) ms
+                                else go gs ext depth alpha beta best.{nodes=best.nodes+pv.nodes, hash=pv.hash} ms
+                        where
+                            killerpv = pv.{nodes=best.nodes+pv.nodes,moves=m.makeKiller!:pv.moves,val=score}
+                            cpv = pv.{nodes=best.nodes+pv.nodes,moves=m!:pv.moves,val=score}
+                            diag = "# goN alpha=" ++ show alpha ++ ", beta=" ++ show beta
+                                ++ ", score=" ++ show score ++ (if score > alpha then "!" else " ")
+                                ++ (if score >= beta then "!" else "") 
+                                ++ " candidate=" ++ joined " "  (map algebraic cpv.moves)
+                  where
+                    capture = not ext &&  depth == 1 && not (gs.current.empty m.to) 
+                    d = if capture then depth else depth-1 
+                     
 
 enter:: Position → Variation → TranspositionTable → Variation
 enter !pos !pv !tt = 
-    if pos.getRootDistance > 3 
-        then pv.{hash = insert pos TR{depth=pv.depth, score=pv.val, moves=pv.moves} tt}
+    if pos.getRootDistance >= 2   -- Nf3 e5 Bb5  vs. Bf5 e5 Nf3 
+        then pv.{hash = insert pos TR{depth=length pv.moves, score=pv.val, moves=pv.moves, useful=0} tt}
         else pv
 
 
@@ -427,20 +429,29 @@ strategyNegaMax gs  = do
                 cont ← gs.talkPV PV{moves=[head allMoves], val=gs.player.factor*(-9999), nodes=1, depth=1, hash=empty}
                 if cont then gs.tellNoMore else pure()
             else  case gs.plan of 
-                Just PV{depth,val,moves=_:_:planmv:_} | val * gs.player.factor > 50 = do
-                        let pos = applyMove gs.current planmv
-                            pv' = correctMateDistance (negaMax gs.{history=pos:gs.history} empty false depth whiteIsMate blackIsMate)
-                            pv = pv'.{moves=planmv:pv'.moves, val ← (* pos.turn.factor)}
-                        if gs.player == WHITE && pv.val > val || gs.player == BLACK && pv.val < val
-                        then do
-                            gs.talkPV pv
-                            gs.tellNoMore
+                Just (plan@PV{depth,val,moves=_:_:planmv:_}) | val * gs.player.factor > 50 = do
+                        println ("# We have a plan: " ++ show plan)
+                        cont1 ← gs.talkPV plan.{depth ← subtract 2, moves ← drop 2, nodes = 1}
+                        if not cont1 then pure ()
                         else do
+                            gs.tellForget
+                            let pos = applyMove gs.current planmv
+                                pv' = correctMateDistance (negaMax gs.{history=pos:gs.history} empty 
+                                                            false (depth-1) whiteIsMate blackIsMate)
+                                pv = pv'.{moves=planmv:pv'.moves, val ← (* pos.turn.factor), depth}
+                            println ("# Plan continuation: " ++ show pv)
                             cont ← gs.talkPV pv
-                            if cont 
-                                then tryNega gs pv.hash 3 whiteIsMate blackIsMate  [] (filter (!=planmv) allMoves)
-                                else pure ()
-                other → tryNega gs empty 3 whiteIsMate blackIsMate  [] allMoves
+                            if gs.player == WHITE && pv.val > val || gs.player == BLACK && pv.val < val
+                            then do
+                                gs.tellNoMore
+                            else do
+                                println("# We better look for another plan.")
+                                stdout.flush
+                                if cont 
+                                    then tryNega gs pv.hash depth whiteIsMate blackIsMate  [pv] 
+                                            (filter (!= planmv) allMoves)
+                                    else pure ()
+                other → tryNega gs empty 4 whiteIsMate blackIsMate  [] allMoves
                 -- loop gs 3 
     where
         {-
@@ -494,6 +505,12 @@ strategyNegaMax gs  = do
                      ++ " move=" ++ algebraic m ++ " score=" ++ show score)
                 stdout.flush    
                 continue ← gs.talkPV pv.{depth}
+                let vs = values pv.hash
+                println ("# tryNegaMax " ++ show depth 
+                            ++ " hash size=" ++ show (length vs) 
+                            ++ " used entries=" ++ show (length [ te | te <- vs, te.useful > 0])
+                            ++ " total uses=" ++ show (fold (\acc te -> acc + te.useful) 0 vs))
+                stdout.flush 
                 if continue
                 then tryNega gs.{killerMoves=killerHash} pv.hash depth alpha beta (pv:pvs) (tail ms)
                 else pure ()
