@@ -220,8 +220,8 @@ protocol strategy gs  = do
                                 ++  " " ++ show (gs.player.factor * pv.val)     -- score in centipawns
                                 ++   " " ++ show ((now - since + 5) `quot` 10)  -- time  in centiseconds
                                 ++   " " ++ show nodes                    -- nodes
-                                ++   " " ++ show (fold (+) 0 (map _.useful (values pv.hash)))
-                                ++  "\t" ++ joined " " (map algebraic pv.moves))) pvs
+                                --   " " ++ show (fold (+) 0 (map _.useful (values pv.hash)))
+                                ++   " " ++ joined " " (map algebraic pv.moves))) pvs
                             stdout.flush
                             let best' = pvs ++ filter (
                                     \p → head p.moves `notElem` map (head . _.moves) pvs) gs.best

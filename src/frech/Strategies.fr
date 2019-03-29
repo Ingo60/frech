@@ -1,17 +1,19 @@
 --- various Strategies, and a main function that selects one
 module frech.Strategies
-    inline (enter) 
+    inline (upperBound, lowerBound, checkBound, exactScore) 
     where
 
 import frege.control.Concurrent(forkOS, MVar)
 import Data.List(sortBy, maximumBy, minimumBy)
 import Data.HashMap as HM(lookup, insert, HashMap, values, keys)
 import Lib.ForkJoin
+import Data.Bits(.&., shiftR)
 
 import frech.Protocol
 import frech.Eval
 import frech.Daten
 import frech.FEN(decodeFEN)
+
 
 -- type Strategy = GameState -> MVar Command -> MVar Input -> IO ()
 
@@ -324,14 +326,18 @@ negaMax !gs !transp !extended !depth !alpha !beta
     | pos.getPlyCounter >= 100  =  PV [] 0 1 depth transp
     | pos `element` tail gs.history  = PV [] 0 1 depth transp
     | depth == 0                = PV [] (pos.turn.factor * evalMS pos (moves pos)) 1 depth transp
-    | Just !te ← lookup pos transp,
-      te.depth >= depth         = case TR{depth=te.depth, score=te.score, moves=te.moves, useful=te.useful+1} of
-                                    !tr → PV{moves=te.moves, val=te.score, nodes=1, depth, 
-                                                    hash=insert pos tr transp} 
+    | !hpv ← hashHit pos transp depth alpha beta,
+      hpv != noPV               = hpv 
     | otherwise                 = 
         case fromMaybe (oms gs pos depth) (lookup pos gs.openingMap) of
             !ms@(_:_) → case go gs transp extended depth alpha beta noPV ms of
-                    !pv → enter pos pv pv.hash
+                    !pv = case TR{depth=length pv.moves, score=bound, moves=pv.moves, useful=0}
+                            of tr -> pv.{hash = insert pos tr pv.hash}
+                        where 
+                            bound = if pv.val >= beta then lowerBound pv.val
+                                        else if pv.val >= alpha then exactScore pv.val
+                                        else upperBound pv.val
+                                                            
             []
                 | check                         = PV [] whiteIsMate 1 depth transp
                 | otherwise                     = PV [] 0           1 depth transp
@@ -371,7 +377,42 @@ negaMax !gs !transp !extended !depth !alpha !beta
                   where
                     capture = not ext &&  depth == 1 && not (gs.current.empty m.to) 
                     d = if capture then depth else depth-1 
-                     
+
+--- create a lower bound score
+lowerBound ∷ Int → Int
+lowerBound !n = 4*n+1
+
+--- create an upper bound score 
+upperBound ∷ Int → Int
+upperBound !n = 4*n-1
+
+--- create an exact score
+exactScore n = n*4
+
+checkBound n =
+    if  n .&. 3 == 0            then EQ     -- exact
+    else if (n-1) .&. 3 == 0    then LT     -- lower bound
+    else                             GT     -- upper bound
+
+--- look for a table hit, with integrated bounds checking
+-- lower bound = 4n+1
+-- upper bound = 4n-1
+-- exact = 4n
+hashHit :: Position → TranspositionTable → Int → Int → Int → Variation
+hashHit !pos !transp !depth !alpha !beta = case lookup pos transp of
+    Just te | te.depth >= depth = case checkBound te.score of
+        EQ →    -- take over exact result
+                case TR{depth=te.depth, score=te.score, moves=te.moves, useful=te.useful+1} of
+                    !tr → PV{moves=te.moves, val=te.score `shiftR` 2, nodes=1, depth, hash=insert pos tr transp}
+        LT | te.score `shiftR` 2 < beta = noPV   -- we better check if it would actually cut the current subtree
+           | otherwise =    -- cut!
+                case TR{depth=te.depth, score=te.score, moves=te.moves, useful=te.useful+1} of
+                    !tr → PV{moves=te.moves, val=te.score `shiftR` 2, nodes=1, depth, hash=insert pos tr transp}
+        GT | te.score `shiftR` 2 > alpha = noPV  -- we better re-search to establish how low it is exactly
+           | otherwise =    -- it is actually low enough not to influence decisions
+                case TR{depth=te.depth, score=te.score, moves=te.moves, useful=te.useful+1} of
+                    !tr → PV{moves=te.moves, val=te.score `shiftR` 2, nodes=1, depth, hash=insert pos tr transp}
+    other → noPV                     
 
 enter:: Position → Variation → TranspositionTable → Variation
 enter !pos !pv !tt = pv.{hash = insert pos TR{depth=length pv.moves, score=pv.val, moves=pv.moves, useful=0} tt}
