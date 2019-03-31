@@ -135,16 +135,17 @@ checkWhiteCastling, checkBlackCastling, whiteBlockedBishopPawns, blackBlockedBis
     whiteLazyOfficers, blackLazyOfficers :: Position -> Int
 
 --- Try to enforce castling:
---- Gives a bonus of '50' if WHITE has castled.
---- Otherwise, gives a malus of -200 if 'KING' or both 'ROOK's have moved.
---- Otherwise, gives a malus of -100 if one 'ROOK' has moved, but the 'KING' can still castle with the other
---- Otherwise, gives a malus of -50  if it hasn't castled yet but still could to both sides.
---- Hence, by castling, one wins 0.7 'PAWN's worth, while by moving the 'KING' prematurely one looses up to 0.5 
+--- Gives a bonus of 25 if WHITE has castled.
+--- Otherwise, gives a malus of -75 if 'KING' or both 'ROOK's have moved.
+--- Otherwise, gives a malus of -50 if one 'ROOK' has moved, but the 'KING' can still castle with the other
+--- Otherwise, gives a malus of -25  if it hasn't castled yet but still could to both sides.
+--- Hence, by castling, one wins 0.25 'PAWN's worth, while by moving the 'KING' prematurely one looses up to 0.75
+--- So the difference between a position where the 'KING' is properly castled and another where it is not is just 1 'PAWN' 
 
 checkWhiteCastling pos = castling
     where
-        !castling = if castled then 50              -- for having castled 
-                    else castlingRights * 50 - 150 
+        !castling = if castled then 25              -- for having castled 
+                    else castlingRights * 25 - 75 
                          --   then negate 50          -- for having moved the king or rooks 
                          --   else negate 20, 35, 50         -- for not having castled yet
         !castled = not (null (pos.flags `inter` Position.whiteHasCastledBits))
@@ -248,9 +249,12 @@ goMaterial pos m n
     where
         !ix = bitIndex m
         !fx = singleton ix
+
 --- compute the value of a 'Piece'
 score ∷ Position → Index → Int
-score pos ix = pieceValue fi.piece
+score pos ix = case fi.piece of
+        PAWN  → 100 + 20 * max 0 (if fi.player == WHITE then ix.rank - 4 else 5 - ix.rank) 
+        other → pieceValue fi.piece
     where
         fi = whatIsOn pos ix
 
