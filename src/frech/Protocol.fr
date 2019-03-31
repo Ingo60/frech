@@ -24,7 +24,9 @@ instance ToJSON Transposition where
 
 type TranspositionTable = HashMap Position Transposition
 
-data Variation = PV { !moves :: [Move], !val :: Int, !nodes :: Int, !depth :: Int, !hash :: TranspositionTable}
+data Variation = PV { !moves :: [Move], !val :: Int, !nodes :: Int, !depth :: Int, 
+                      !hash  :: TranspositionTable
+                      }
 instance Ord Variation where
     hashCode pv = 0
     pv1 < pv2 = pv1.val < pv2.val
@@ -84,6 +86,7 @@ data GameState = GS {
         !plan :: Maybe Variation    --- The 'Variation' we are playing. 2nd entry is expected opponent move, 3rd our continuation
         !openingMap :: HashMap Position [Move]    --- moves to expect in the opening
         !killerMoves :: HashMap Move Int --- killer 'Move's found during search
+        !risk  :: Int                    {-- risk factor in iterative pruning: keep moves contributing _risk_% -} 
         !nodes :: Int                    --- counter for nodes searched   
         !state :: State              {-- 
                                         Are we in force mode, playing or thinking?
@@ -223,9 +226,9 @@ protocol strategy gs  = do
                                 --   " " ++ show (fold (+) 0 (map _.useful (values pv.hash)))
                                 ++   " " ++ joined " " (map algebraic pv.moves))) pvs
                             stdout.flush
-                            let best' = pvs ++ filter (
+                            let best = pvs ++ filter (
                                     \p → head p.moves `notElem` map (head . _.moves) pvs) gs.best
-                                best = map (_.{hash=empty}) best'    
+                                -- best = map (_.{hash=empty}) best'    
                             if continue 
                                 then protocol strategy gs.{best, nodes}
                                 else finishThinking () >> sendMove gs.{best, nodes=0} >>= protocol strategy
@@ -305,7 +308,7 @@ protocol strategy gs  = do
         -- pong (p:ps) = pong ps >> println ("pong " ++ show p) >> stdout.flush
         sendMove ∷ GameState → IO GameState
         sendMove gs = case gs.best of
-                [x] | not (null gs.backup), 
+                [x] | length gs.backup > 1, 
                       gs.player == WHITE && all (>x) gs.backup
                         || gs.player == BLACK && all (<x) gs.backup = do
                             println "# WARNING: WE BETTER USE THE BACKUP INSTEAD A SINGLE BAD MOVE"
@@ -334,9 +337,15 @@ protocol strategy gs  = do
                                                 && abs pv1.val < blackIsMate `quot` 2  -- dont gamble with mate
                                                 then pv2 else pv1
                                 single -> head spv
-                        m = head pv.moves
+                                
+                    unless (null pv.moves) do 
+                        let m = head pv.moves
+                        println ("# sorted pvs: " ++ show (
+                            map (\p -> (algebraic (head p.moves), p.val)) spv))
+                        println ("move " ++ algebraic m)
+                        
                         -- expected = if length pv.moves > 1 then Just $! head (tail pv.moves) else Nothing
-                        pos = applyMove gs.current m
+                    let pos = if null pv.moves then gs.current else applyMove gs.current (head pv.moves)
                         ms  = moves pos
                         mate = null ms && inCheck pos pos.turn
                         stalemate = null ms && not mate
@@ -344,15 +353,11 @@ protocol strategy gs  = do
                         repetition = not mate && not stalemate && not moves50 
                                               && length (filter (==pos) gs.history) > 1
                         finished = mate || stalemate || moves50 || repetition
-                    checkApplyMove gs.current m pos
-                    println ("# sorted pvs: " ++ show (
-                                            map (\p -> (algebraic (head p.moves), p.val)) spv))
-                    println ("move " ++ algebraic m)
                     
                     --println ("# after " ++ show m)
                     --println ("# " ++ show (whatIsOn pos m.from))
                     --println ("# " ++ show (whatIsOn pos m.to)) 
-            
+
                     when (stalemate)  do  println "1/2-1/2 {Stalemate}"
                     when (mate)       do  if pos.turn == WHITE
                                             then println "0-1 {Black mates}"
@@ -405,7 +410,8 @@ xboardCommand command gs = do
                         ++ "done=1")
             stdout.flush
             pure gs
-        '^\s*new\b'         → pure gs.{history=[initialBoard], state=PLAYING, player=BLACK}
+        '^\s*new\b'         → pure gs.{history=[initialBoard], state=PLAYING, player=BLACK,
+                                        nodes=0, plan=Nothing, best=[], backup=[], killerMoves=empty}
         '^\s*quit\b'        → do
                                 gs.tvar.offer false     -- just in case
                                 pure gs.{state=TERMINATED}
@@ -419,7 +425,8 @@ xboardCommand command gs = do
                     println ("Error (" ++ s ++ ")") >> stdout.flush
                     pure gs.{state=FORCED}
                 Right p → do
-                    pure gs.{history=[p], state=FORCED, best=[]}
+                    pure gs.{history=[p], state=FORCED, 
+                            nodes=0, plan=Nothing, best=[], backup=[], killerMoves=empty}
         -- user makes a move
         '^\s*usermove\s+\w+\b' → do
             -- println "# in usermove"
@@ -435,7 +442,8 @@ xboardCommand command gs = do
                     pure gs
               Just mv → do
                     let pos = applyMove p mv
-                        gs' = gs.{history ← (pos.clearRootPlyCounter:), sid ← succ}
+                        gs' = gs.{history ← (pos.clearRootPlyCounter:), sid ← succ,
+                                    nodes=0, best=[], backup=[], killerMoves=empty}
                     --println ("# after " ++ show mv)
                     --println ("# " ++ show (whatIsOn pos mv.from))
                     --println ("# " ++ show (whatIsOn pos mv.to))
