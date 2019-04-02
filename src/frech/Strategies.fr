@@ -429,13 +429,13 @@ hashHit !pos !transp !depth !alpha !beta = case lookup pos transp of
            | te.score `shiftR` 2 < beta = noPV   -- we better check if it would actually cut the current subtree
            | otherwise =    -- cut!
                 case TR{depth=te.depth, score=te.score, moves=te.moves, useful=te.useful+1} of
-                    !tr → PV{moves=te.moves, val=te.score `shiftR` 2, nodes=1, depth, hash=nhash}
+                    !tr → PV{moves=te.moves, val=(te.score-1) `shiftR` 2, nodes=1, depth, hash=nhash}
                         where !nhash = if te.score `shiftR` 2 == 0 then transp else insert pos tr transp
         GT 
            | te.score `shiftR` 2 > alpha = noPV  -- we better re-search to establish how low it is exactly
            | otherwise =    -- it is actually low enough not to influence decisions
                 case TR{depth=te.depth, score=te.score, moves=te.moves, useful=te.useful+1} of
-                    !tr → PV{moves=te.moves, val=te.score `shiftR` 2, nodes=1, depth, hash=nhash}
+                    !tr → PV{moves=te.moves, val=(te.score+1) `shiftR` 2, nodes=1, depth, hash=nhash}
                         where !nhash = if te.score `shiftR` 2 == 0 then transp else insert pos tr transp
     other → noPV                     
 
@@ -479,13 +479,16 @@ strategyNegaMax ∷ NegaMaxWorker → Strategy
 strategyNegaMax tryNega gs  = do
         let suggested = fold (\h\m → insert m 2 h) empty (fromMaybe [] (lookup gs.current gs.openingMap)) 
             allMoves = orderedMoves gs.current suggested (moves gs.current)
+        println "# in strategyNegaMax"
+        stdout.flush
         if length allMoves == 1
             then do 
                 cont ← gs.talkPV PV{moves=[head allMoves], val=gs.player.factor*(-9999), nodes=1, depth=1, hash=empty}
                 if cont then gs.tellNoMore else pure()
             else  case gs.plan of 
-                Just (plan@PV{depth,val,moves=_:_:planmv:_}) | val * gs.player.factor > 0 = do
+                Just (plan@PV{depth,val,moves=_:_:planmv:_}) | val * gs.player.factor > 25 = do
                         println ("# We have a plan: " ++ show plan)
+                        stdout.flush
                         cont1 ← gs.talkPV plan.{depth ← subtract 2, moves ← drop 2, nodes = 1}
                         if not cont1 then pure ()
                         else do
@@ -496,7 +499,7 @@ strategyNegaMax tryNega gs  = do
                                 pv = pv'.{moves=planmv:pv'.moves, val ← (* pos.turn.factor), depth}
                             println ("# Plan continuation: " ++ show pv)
                             cont ← gs.talkPV pv
-                            if gs.player.factor * pv.val > 90 `percent` gs.player.factor * val
+                            if gs.player.factor * pv.val > 95 `percent` gs.player.factor * val
                                 &&    (gs.player.factor * pv.val == blackIsMate         -- direct mate
                                     || gs.player.factor * pv.val <  blackIsMate - 100)  -- look for shortest path anyway   
                             then do
@@ -508,7 +511,10 @@ strategyNegaMax tryNega gs  = do
                                     then tryNega gs pv.hash depth whiteIsMate blackIsMate  [pv] 
                                             (filter (!= planmv) allMoves)
                                     else pure ()
-                other → tryNega gs empty 4 whiteIsMate blackIsMate  [] allMoves
+                other → do
+                    println("# no plan")
+                    stdout.flush
+                    tryNega gs empty 4 whiteIsMate blackIsMate  [] allMoves
 
 negaSimple :: NegaMaxWorker
 negaSimple gs hash depth alpha beta _ _ 
