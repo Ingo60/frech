@@ -327,30 +327,58 @@ negaMax !gs !transp !extended !depth !alpha !beta
     | stopThinking              =  PV [] 0 1 depth transp 
     | pos.getPlyCounter >= 100  =  PV [] 0 1 depth transp
     | pos `element` tail gs.history  = PV [] 0 1 depth transp
-    | depth == 0                = PV [] (pos.turn.factor * evalMS pos (moves pos)) 1 depth transp
-    | not (gs.name.startsWith "nohash"),
-      !hpv ← hashHit pos transp depth alpha beta,
-      hpv != noPV               = hpv 
-    | otherwise                 = 
-        case fromMaybe (oms gs pos depth) (lookup pos gs.openingMap) of
-            !ms@(_:_) → case go gs transp extended depth alpha beta noPV ms of
-                    !pv = case TR{depth=length pv.moves, score=bound, moves=pv.moves, useful=0}
-                            of tr | pv.val != 0 = pv.{hash = insert pos tr pv.hash}
-                                  | otherwise   = pv
-                        where 
-                            bound = if pv.val >= beta then lowerBound pv.val
-                                        else if pv.val >= alpha then exactScore pv.val
-                                        else upperBound pv.val
-
-            []
-                | check                         = PV [] whiteIsMate 1 depth transp
-                | otherwise                     = PV [] 0           1 depth transp
-                 
-                                        
+    | depth == 0                = PV [] (pos.turn.factor * eval pos) 1 depth transp
+    | otherwise                 =
+        case lookup pos transp of
+            Just te | not (gs.name.startsWith "nohash") =  
+                        case checkBound te.score of
+                            EQ | te.depth >= depth = 
+                                  case TR{depth=te.depth, score=te.score, moves=te.moves, useful=te.useful+1} of
+                                    !tr → PV{moves=te.moves, val=te.score `shiftR` 2, nodes=1, depth, hash=nhash}
+                                        where !nhash = if te.score `shiftR` 2 == 0 
+                                                        then transp 
+                                                        else insert pos tr transp
+                            LT | te.depth >= depth, beta' < beta = case oms gs' pos depth of
+                                    !ms@(_:_) → case go gs' transp extended depth alpha beta' noPV ms of
+                                        !pv | depth >= te.depth = insertPV pos depth alpha beta' pv
+                                            | otherwise = pv
+                                    []  | inCheck pos pos.turn          = PV [] whiteIsMate 1 depth transp
+                                        | otherwise                     = PV [] 0           1 depth transp
+                               where beta' = (te.score-1) `shiftR` 2
+                            GT | te.depth >= depth, alpha' > alpha =  case oms gs' pos depth of
+                                    !ms@(_:_) → case go gs' transp extended depth alpha' beta noPV ms of
+                                        !pv | depth >= te.depth = insertPV pos depth alpha' beta pv
+                                            | otherwise = pv
+                                    []  | inCheck pos pos.turn          = PV [] whiteIsMate 1 depth transp
+                                        | otherwise                     = PV [] 0           1 depth transp
+                               where alpha' = (te.score+1) `shiftR` 2
+                            sonst =  case oms gs' pos depth of
+                              !ms@(_:_) → case go gs' transp extended depth alpha beta noPV ms of
+                                !pv → insertPV pos depth alpha beta pv
+                              []  | inCheck pos pos.turn          = PV [] whiteIsMate 1 depth transp
+                                  | otherwise                     = PV [] 0           1 depth transp
+                    where
+                        !hashmove = head te.moves
+                        !gs' = gs.{killerMoves = insert hashmove 999 gs.killerMoves} 
+                    
+            nohash →  case fromMaybe (oms gs pos depth) (lookup pos gs.openingMap) of
+                !ms@(_:_) → case go gs transp extended depth alpha beta noPV ms of
+                        !pv = insertPV pos depth alpha beta pv
+                []
+                    | inCheck pos pos.turn          = PV [] whiteIsMate 1 depth transp
+                    | otherwise                     = PV [] 0           1 depth transp
     where
         !pos   = gs.current
         -- ms    = moves pos
-        check = inCheck pos pos.turn
+        -- check = inCheck pos pos.turn
+        insertPV ∷ Position → Int → Int → Int → Variation → Variation
+        insertPV !pos depth !alpha !beta !pv = case TR{depth, score=bound, moves=pv.moves, useful=0}
+                of tr | pv.val != 0 = pv.{hash = insert pos tr pv.hash}
+                      | otherwise   = pv
+            where 
+                !bound = if pv.val >= beta then lowerBound pv.val
+                            else if pv.val >= alpha then exactScore pv.val
+                            else upperBound pv.val
         
         oms ∷ GameState → Position → Int → [Move]
         oms gs pos depth = if depth > 1 then orderedMoves pos gs.killerMoves (moves pos) else moves pos
