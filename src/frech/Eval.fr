@@ -93,17 +93,11 @@ evalHist history pos
         check = inCheck pos pos.turn
 
 --- does not detect mate, stalemate or draw by rule
+--- Doesn't take move numbers into account
 eval ∷ Position  → Int
-eval pos = evalMS pos (moves pos)
- 
---- Faster than 'eval' when you have the moves anyway.
---- Like with 'eval', you need to detect checkmate, stalemate, draw by repetition or by 50 moves rule separately.
-evalMS ∷ Position → [Move] → Int
-evalMS pos mms = (matDelta * ((max matWhite matBlack * 1000) `quot`  min matWhite matBlack)) `quot` 1000
+eval pos = (matDelta * ((max matWhite matBlack * 1000) `quot`  min matWhite matBlack)) `quot` 1000
                     + goHanging  pos (pos.playerFigures WHITE) 0
                     - goHanging  pos (pos.playerFigures BLACK) 0 
-                    + forP pos.turn (4 * length mms)
-                    + forP pos.turn.opponent (4 * length oms)
                     + forP pos.turn.opponent checkBonus
                     + checkWhiteCastling pos 
                     - checkBlackCastling pos
