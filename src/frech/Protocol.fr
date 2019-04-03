@@ -458,7 +458,7 @@ xboardCommand command gs = do
                                     appendFile ("data/opening-" ++ (show gs.player).toLowerCase)
                                         (algebraic mv ++ " " ++ encodeFEN p ++ "\n")
                                     pure gs'.{openingMap ← HM.insert p (mv:ems), plan=Nothing}
-                                  | otherwise = pure gs'    -- we know this one already
+                                  | otherwise = pure gs'.{plan=Nothing}    -- we know this one already
                                 Nothing → do
                                     appendFile ("data/opening-" ++ (show gs.player).toLowerCase)
                                         (algebraic mv ++ " " ++ encodeFEN p ++ "\n")
