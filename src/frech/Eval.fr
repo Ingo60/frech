@@ -99,6 +99,8 @@ eval pos = (matDelta * ((max matWhite matBlack * 1000) `quot`  min matWhite matB
                     + goHanging  pos (pos.playerFigures WHITE) 0
                     - goHanging  pos (pos.playerFigures BLACK) 0 
                     + forP pos.turn.opponent checkBonus
+                    + forP pos.turn          (4*playerMoves)
+                    + forP pos.turn.opponent (4*opponentMoves)
                     + checkWhiteCastling pos 
                     - checkBlackCastling pos
                     - (whiteBlockedBishopPawns pos * 21)
@@ -107,11 +109,16 @@ eval pos = (matDelta * ((max matWhite matBlack * 1000) `quot`  min matWhite matB
                     + (blackBlockedBishops pos * 43)
                     - (whiteLazyOfficers pos * 15)
                     + (blackLazyOfficers pos * 15)
+                    + (whiteCoveredKing pos)
+                    - (blackCoveredKing pos)
                     
     where
-        oms =  if pos.turn == WHITE  then moves pos.{flags = pos.flags `diff`  whiteToMove} 
-                                     else moves pos.{flags = pos.flags `union` whiteToMove}
+        opponentMoves = if endgame pos then 
+            if pos.turn == WHITE  then length (moves pos.{flags = pos.flags `diff`  whiteToMove}) 
+                                  else length (moves pos.{flags = pos.flags `union` whiteToMove})
+                         else 0
         check = inCheck pos pos.turn
+        playerMoves = if endgame pos then length (moves pos) else 0
         checkBonus = if check then 25 else 0
         !matWhite = goMaterial pos pos.whites 0
         !matBlack = goMaterial pos (pos.figures `diff` pos.whites) 0
@@ -126,7 +133,20 @@ eval pos = (matDelta * ((max matWhite matBlack * 1000) `quot`  min matWhite matB
 
 checkWhiteCastling, checkBlackCastling, whiteBlockedBishopPawns, blackBlockedBishopPawns,
     whiteBlockedBishops, blackBlockedBishops,
-    whiteLazyOfficers, blackLazyOfficers :: Position -> Int
+    whiteLazyOfficers, blackLazyOfficers, 
+    whiteCoveredKing, blackCoveredKing :: Position -> Int
+
+--- compensate for the immobility penalty caused by pieces near the king
+whiteCoveredKing pos = card (pos.blackFigures `inter` targets) * 5
+                     + card (pos.whiteFigures `inter` targets) * 6
+    where !targets  = kingTargets kingIndex 
+          kingIndex = bitIndex (pos.kings `inter` pos.whiteFigures)   -- assuming we do have a white king :)
+
+blackCoveredKing pos = card (pos.blackFigures `inter` targets) * 6
+                     + card (pos.whiteFigures `inter` targets) * 5
+    where !targets  = kingTargets kingIndex 
+          kingIndex = bitIndex (pos.kings `inter` pos.blackFigures)   -- assuming we do have a black king :)
+
 
 --- Try to enforce castling:
 --- Gives a bonus of 25 if WHITE has castled.
