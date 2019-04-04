@@ -1,7 +1,7 @@
 --- Basic data structures for the Chess engine
 module frech.Daten
     inline (Position.figures, decodeFigure, member, singleton, whatIsOn, bitIndex, card, 
-            Position.turn, boolMask,
+            Position.turn, Position.whiteFigures, Position.blackFigures, boolMask,
             Player.factor, Player.opponent) where
 
 import Data.Bits
