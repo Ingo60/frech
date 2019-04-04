@@ -332,29 +332,29 @@ negaMax !gs !transp !extended !depth !alpha !beta
         case lookup pos transp of
             Just te | not (gs.name.startsWith "nohash") =  
                         case checkBound te.score of
-                            EQ | te.depth >= depth = 
-                                  case TR{depth=te.depth, score=te.score, moves=te.moves, useful=te.useful+1} of
-                                    !tr → PV{moves=te.moves, val=te.score `shiftR` 2, nodes=1, depth, hash=nhash}
-                                        where !nhash = if te.score `shiftR` 2 == 0 
-                                                        then transp 
-                                                        else insert pos tr transp
-                            LT | te.depth >= depth, beta' < beta = case oms gs' pos depth of
-                                    !ms@(_:_) → case go gs' transp extended depth alpha beta' noPV ms of
-                                        !pv | depth >= te.depth = insertPV pos depth alpha beta' pv
+                            EQ | te.depth >= depth 
+                               = PV{moves=te.moves, val=te.score `shiftR` 2, nodes=0, depth, hash=transp}
+                            LT | te.depth >= depth = if alpha' >= beta
+                                    then PV{moves=te.moves, val=alpha', nodes=0, depth, hash=transp} 
+                                    else case oms gs' pos depth of
+                                      !ms@(_:_) → case go gs' transp extended depth alpha' beta noPV ms of
+                                        !pv | depth >= te.depth, not extended = insertPV pos depth alpha beta pv
                                             | otherwise = pv
-                                    []  | inCheck pos pos.turn          = PV [] whiteIsMate 1 depth transp
-                                        | otherwise                     = PV [] 0           1 depth transp
-                               where beta' = (te.score-1) `shiftR` 2
-                            GT | te.depth >= depth, alpha' > alpha =  case oms gs' pos depth of
-                                    !ms@(_:_) → case go gs' transp extended depth alpha' beta noPV ms of
-                                        !pv | depth >= te.depth = insertPV pos depth alpha' beta pv
+                                      []  | inCheck pos pos.turn          = PV [] whiteIsMate 1 depth transp
+                                          | otherwise                     = PV [] 0           1 depth transp
+                               where alpha' = max alpha ((te.score-1) `shiftR` 2)
+                            GT | te.depth >= depth = if alpha >= beta'
+                                    then  PV{moves=te.moves, val=beta', nodes=0, depth, hash=transp}
+                                    else  case oms gs' pos depth of
+                                      !ms@(_:_) → case go gs' transp extended depth alpha beta' noPV ms of
+                                        !pv | depth >= te.depth, not extended = insertPV pos depth alpha beta' pv
                                             | otherwise = pv
-                                    []  | inCheck pos pos.turn          = PV [] whiteIsMate 1 depth transp
-                                        | otherwise                     = PV [] 0           1 depth transp
-                               where alpha' = (te.score+1) `shiftR` 2
+                                      []  | inCheck pos pos.turn          = PV [] whiteIsMate 1 depth transp
+                                          | otherwise                     = PV [] 0           1 depth transp
+                               where beta' = min beta ((te.score+1) `shiftR` 2)
                             sonst =  case oms gs' pos depth of
                               !ms@(_:_) → case go gs' transp extended depth alpha beta noPV ms of
-                                !pv → insertPV pos depth alpha beta pv
+                                !pv → if extended then pv else insertPV pos depth alpha beta pv
                               []  | inCheck pos pos.turn          = PV [] whiteIsMate 1 depth transp
                                   | otherwise                     = PV [] 0           1 depth transp
                     where
@@ -363,7 +363,7 @@ negaMax !gs !transp !extended !depth !alpha !beta
                     
             nohash →  case fromMaybe (oms gs pos depth) (lookup pos gs.openingMap) of
                 !ms@(_:_) → case go gs transp extended depth alpha beta noPV ms of
-                        !pv = insertPV pos depth alpha beta pv
+                        !pv = if extended then pv else insertPV pos depth alpha beta pv
                 []
                     | inCheck pos pos.turn          = PV [] whiteIsMate 1 depth transp
                     | otherwise                     = PV [] 0           1 depth transp
