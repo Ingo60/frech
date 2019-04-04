@@ -6,21 +6,25 @@ import Control.Concurrent(MVar, forkIO, forkOS)
 import System.Random(randomIO)
 import Data.List(sortBy)
 import Data.Bits(.^.)
-import Data.HashMap as HM(HashMap, values)
+import Data.HashMap as HM(HashMap, values, lookup, insert)
 import Data.JSON(ToJSON, struct, Struct, assoc)
 
 import frech.Daten
 import frech.FEN(decodeFEN, encodeFEN)
 import frech.Eval(opening, endgame, blackIsMate)
 
+native gc java.lang.System.gc :: () -> IO ()
 
-
-data Transposition = TR { !depth, !score :: Int, !moves:: [Move], !useful :: Int }
+data Transposition = TR {   !depth :: Int, 
+                            !score :: Int           --- integrated bounds: n*4 exact, n*4+1 lower bound, n*4-1 upper bound 
+                            !pvMoves  :: [Move]     --- moves of the principal variation 
+                            !posMoves :: [Move]     --- ordered moves of the associated position 
+                        }
 instance ToJSON Transposition where
     toJSON tr = Struct [assoc "depth" tr.depth, 
                         assoc "score" tr.score, 
-                        assoc "moves" tr.moves, 
-                        assoc "useful" tr.useful]
+                        assoc "pvMoves" tr.pvMoves, 
+                        assoc "posMoves" tr.posMoves]
 
 type TranspositionTable = HashMap Position Transposition
 
@@ -196,7 +200,7 @@ protocol strategy gs  = do
                         println "# Thinking timed out." >> stdout.flush
                         gs.tvar.offer false         -- tell strategy to finish
                         finishThinking ()
-                        sendMove gs >>= protocol strategy
+                        sendMove gs >>= collectGarbage >>= protocol strategy
                     Just EOF → do
                         println "# EOF on standard input while thinking!?" >> stdout.flush
                         gs.tvar.offer false
@@ -231,7 +235,7 @@ protocol strategy gs  = do
                                 -- best = map (_.{hash=empty}) best'    
                             if continue 
                                 then protocol strategy gs.{best, nodes}
-                                else finishThinking () >> sendMove gs.{best, nodes=0} >>= protocol strategy
+                                else finishThinking () >> sendMove gs.{best, nodes=0} >>= collectGarbage >>= protocol strategy
                         | otherwise = do
                             println "# ignoring move from previous strategy instance." >> stdout.flush
                             protocol strategy gs
@@ -368,7 +372,25 @@ protocol strategy gs  = do
                     -- pong gs.pings
                     pure  gs.{history ← (pos.clearRootPlyCounter:), sid ← succ, plan=Just pv,
                                 state = if finished then FORCED else PLAYING,
-                                best  = []}
+                                best  = [],
+                                backup = []}
+
+        collectGarbage :: GameState -> IO GameState
+        collectGarbage gs = do
+            gc ()                   -- now release the stuff from previous iteration
+            case gs.plan of
+                Just pv -> pure gs.{plan=Just pv.{hash=cleanup [gs.current] pv.hash empty}}
+                Nothing -> pure gs
+        
+        cleanup ∷ [Position] → TranspositionTable → TranspositionTable → TranspositionTable
+        cleanup []     old new = new
+        cleanup (p:ps) old new
+            | Just e ← lookup p new = cleanup ps old new    -- already in new
+            | Just e ← lookup p old = cleanup (children p e.posMoves ++ ps) old (insert p e new)
+            | otherwise = cleanup ps old new
+            where
+                children ∷ Position → [Move] → [Position]
+                children p ms = [ applyMove p m | m ← ms ]
  
 fmt :: Long → String
 fmt = "0x%016d".format
