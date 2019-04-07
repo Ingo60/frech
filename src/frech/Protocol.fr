@@ -6,7 +6,7 @@ import Control.Concurrent(MVar, forkIO, forkOS)
 import System.Random(randomIO)
 import Data.List(sortBy)
 import Data.Bits(.^.)
-import Data.HashMap as HM(HashMap, values, lookup, insert)
+import Data.HashMap as HM(HashMap, values, lookup, insert, size)
 import Data.JSON(ToJSON, struct, Struct, assoc)
 
 import frech.Daten
@@ -22,7 +22,7 @@ data Transposition = TR {   !depth :: Int,
                         }
 instance ToJSON Transposition where
     toJSON tr = Struct [assoc "depth" tr.depth, 
-                        assoc "score" tr.score, 
+                        assoc "score" tr.score,
                         assoc "pvMoves" tr.pvMoves, 
                         assoc "posMoves" tr.posMoves]
 
@@ -30,7 +30,15 @@ type TranspositionTable = HashMap Position Transposition
 
 data Variation = PV { !moves :: [Move], !val :: Int, !nodes :: Int, !depth :: Int, 
                       !hash  :: TranspositionTable
-                      }
+                    }
+
+instance ToJSON Variation where
+    toJSON pv = Struct [assoc "depth" pv.depth,
+                        assoc "val"   pv.val,
+                        assoc "nodes" pv.nodes,
+                        assoc "moves" pv.moves,
+                        assoc "hashsz" (size pv.hash)]
+
 instance Ord Variation where
     hashCode pv = 0
     pv1 < pv2 = pv1.val < pv2.val
@@ -58,6 +66,7 @@ data Input =
         | MV !Int ![Variation] --- Sent by strategy identified by some number when it has found a 'Move'
         | Forget Int    --- Sent by strategy when all previously computed variations should get forgotten 
         | NoMore Int    --- Sent by strategy identified by some number when it can't find more 'Move's.
+        | Remove Int Variation    ---- Sent by strategy to remove/invalidate a 'Variation'.
 deriving Eq Input
 deriving Show Input
 
@@ -149,7 +158,9 @@ data GameState = GS {
         talkPV :: GameState → Variation → IO Command
         talkPV gs var = talkDriver gs (MV gs.sid [var]) 
         talkPVs :: GameState → [Variation] → IO Command
-        talkPVs gs vars = talkDriver gs (MV gs.sid vars) 
+        talkPVs gs vars = talkDriver gs (MV gs.sid vars)
+        tellRemove ∷ GameState → Variation → IO ()
+        tellRemove gs pv = tellDriver gs (Remove gs.sid pv) 
 
 
 
@@ -170,7 +181,7 @@ reader cvar dvar = do
 
 protocol :: Strategy → GameState → IO ()
 protocol strategy gs  = do
-        let (hma, hmb, _) = HashMap.collisions gs.openingMap
+        let (_x, hmb, _) = HashMap.collisions gs.openingMap
         --println ("# protocol state=" ++ gs.state.show ++ ", player=" ++ gs.player.show
         --            -- ". cores=" ++ show gs.cores
         --            ++ " collision nodes=" ++ show hma
@@ -211,6 +222,12 @@ protocol strategy gs  = do
                             println "# forgetting previous variations"
                             stdout.flush
                             protocol strategy gs.{backup = gs.best, best=[]}
+                        | otherwise = protocol strategy gs
+                    Just (Remove sid pv)
+                        | sid == gs.sid = do
+                            println ("# forgetting variation " ++ show pv)
+                            stdout.flush
+                            protocol strategy gs.{best=[ p | p <- gs.best, head p.moves != head pv.moves ]}
                         | otherwise = protocol strategy gs
                     Just (MV id pvs)
                         | id == gs.sid = do
@@ -298,6 +315,7 @@ protocol strategy gs  = do
         commandProcessing cmd = case cmd of
                 EOF     → pure gs.{state=TERMINATED}   -- too bad
                 Forget _ -> pure gs
+                Remove _ _ -> pure gs
                 MV  _ _  → do
                     println "# ignoring an unexpected move." >> stdout.flush
                     gs.tvar.offer false

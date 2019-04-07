@@ -40,6 +40,8 @@ main [arg] = do
             'ab'        → strategyAlphaBeta
             'negamin'   → strategyNegaMax negaSimple
             'nega'      → strategyNegaMax tryNega
+            '(?i)mtdf'  → strategyMTDf
+            '(?i)mtdbi'  → strategyMTDbi 
             _           → strategyResign
     let f = File.new "./data"
     c ← f.isDirectory
@@ -275,8 +277,8 @@ maximize !gs !d !alpha !beta  (m:ms) = case alphaBeta false gs.history d alpha b
             beta'  = if gs.player == BLACK then min beta  pv.val else beta
 
 correctMateDistance :: Variation → Variation
-correctMateDistance pv =   if pv.val == whiteIsMate then pv.{val = pv.val + dist}
-                      else if pv.val == blackIsMate then pv.{val = pv.val - dist}
+correctMateDistance pv =   if pv.val == whiteIsMate then pv.{val = pv.val + dist*2}
+                      else if pv.val == blackIsMate then pv.{val = pv.val - dist*2}
                       else pv
       where
         dist = length pv.moves
@@ -360,7 +362,7 @@ negaMax !gs !transp !extended !depth !alpha !beta
                     where
                         !hashmove = head te.pvMoves
                         !ordered = hashmove : [ m | m ← te.posMoves, m!=hashmove ]
-                        !gs' = gs.{killerMoves = insert hashmove 999 gs.killerMoves} 
+                        !gs' = gs.{killerMoves = insert hashmove 5 gs.killerMoves} 
                     
             Nothing →  case fromMaybe (oms gs pos depth) (lookup pos gs.openingMap) of
                 !ms@(_:_) → case go gs transp extended depth alpha beta noPV ms of
@@ -398,9 +400,11 @@ negaMax !gs !transp !extended !depth !alpha !beta
                           traceLn diag = best
                         | otherwise = if score >= beta then killerpv 
                             else if (score > alpha || score > best.val)
-                                then go gs pv.hash ext depth (max score alpha) beta cpv ms
-                                else go gs pv.hash ext depth alpha beta best' ms
+                                then go gs' pv.hash ext depth (max score alpha) beta cpv ms
+                                else go gs' pv.hash ext depth alpha beta best' ms
                         where
+                            gs' = if null pv.moves then gs 
+                                    else gs.{killerMoves = insert (head pv.moves) 2 gs.killerMoves}
                             killerpv = pv.{nodes=best.nodes+pv.nodes,moves=m.makeKiller!:pv.moves,val=score}
                             cpv = pv.{nodes=best.nodes+pv.nodes,moves=m!:pv.moves,val=score}
                             best' = best.{nodes=best.nodes+pv.nodes, hash=pv.hash}
@@ -585,3 +589,107 @@ tryNega gs hash depth alpha beta pvs ms
         if continue
         then tryNega gs.{killerMoves=killerHash newKillers} pv.hash depth alpha beta (pv:pvs) (tail ms)
         else pure ()
+
+strategyMTDf :: Strategy
+strategyMTDf gs  = do
+        let suggested = fold (\h\m → insert m 2 h) empty (fromMaybe [] (lookup gs.current gs.openingMap)) 
+            allMoves = orderedMoves gs.current suggested (moves gs.current)
+        println "# in strategyMTDf"
+        stdout.flush
+        if length allMoves == 1
+            then do 
+                cont ← gs.talkPV PV{moves=[head allMoves], val=gs.player.factor*(-9999), nodes=1, depth=1, hash=empty}
+                if cont then gs.tellNoMore else pure()
+            
+            else do
+                println ("# our plan: " ++ show gs.plan)     
+                case gs.plan of
+                    Just (plan@PV{depth,val,moves=_:_:planmv:_}) 
+                        | blackIsMate - val*gs.player.factor < 100 = do
+                            println ("# We have a mate plan: " ++ show plan)
+                            stdout.flush
+                            cont1 ← gs.talkPV plan.{depth ← subtract 2, moves ← drop 2, nodes = 1}
+                            if not cont1 then pure () else gs.tellNoMore
+                    Just plan → do
+                        println "# let's see whether we can continue"
+                        stdout.flush
+                        mtdf gs (min 8 plan.depth) plan.{depth ← subtract 2, moves ← drop 2, nodes = 1}
+                    other → do
+                        println("# no plan at all")
+                        stdout.flush
+                        mtdf gs 5 (correctMateDistance $ negaMax gs empty false 4 whiteIsMate blackIsMate)
+
+strategyMTDbi :: Strategy
+strategyMTDbi gs  = do
+        let suggested = fold (\h\m → insert m 2 h) empty (fromMaybe [] (lookup gs.current gs.openingMap)) 
+            allMoves = orderedMoves gs.current suggested (moves gs.current)
+        println "# in strategyMTDf"
+        stdout.flush
+        if length allMoves == 1
+            then do 
+                cont ← gs.talkPV PV{moves=[head allMoves], val=gs.player.factor*(-9999), nodes=1, depth=1, hash=empty}
+                if cont then gs.tellNoMore else pure()
+            
+            else do
+                println ("# our plan: " ++ show gs.plan)     
+                case gs.plan of
+                    Just (plan@PV{depth,val,moves=_:_:planmv:_}) 
+                        | blackIsMate - val*gs.player.factor < 100 = do
+                            println ("# We have a mate plan: " ++ show plan)
+                            stdout.flush
+                            cont1 ← gs.talkPV plan.{depth ← subtract 2, moves ← drop 2, nodes = 1}
+                            if not cont1 then pure () else gs.tellNoMore
+                    other → do
+                        println("# no mate plan")
+                        stdout.flush
+                        mtdBi gs 5 
+
+    
+mtdBi :: GameState -> Int → IO ()
+mtdBi gs d = do
+        let upv = correctMateDistance (negaMax gs empty false d (blackIsMate-1) blackIsMate)
+        stdout.printf "# mtdbi upv=%d node=%d moves=%s\n" upv.val upv.nodes (show upv.moves)
+        let lpv = correctMateDistance (negaMax gs upv.hash false d (whiteIsMate+1) (whiteIsMate+2))
+        stdout.printf "# biRepeat lpv=%d node=%d moves=%s\n" lpv.val lpv.nodes (show lpv.moves)
+        pv ← if upv.val >= lpv.val 
+                then mtRepeat gs d upv lpv.val upv.val
+                else mtRepeat gs d lpv upv.val lpv.val
+        cont ← gs.talkPV pv.{val = pv.val * gs.player.factor, depth=d, hash=empty}
+        if cont then do
+            if blackIsMate - pv.val < 100 || d > 256 
+                then gs.tellNoMore 
+                else mtdf gs (d+1) pv
+        else pure ()
+
+
+mtdf :: GameState -> Int -> Variation → IO ()
+mtdf gs d f | null f.moves = strategyBest gs
+mtdf gs d f = do
+        pv ← mtRepeat gs d f.{depth=d} whiteIsMate blackIsMate
+        cont ← gs.talkPV pv.{val = pv.val * gs.player.factor, depth=d, hash=empty}
+        if cont then do
+            if blackIsMate - pv.val < 100 || d > 256 
+                then gs.tellNoMore 
+                else mtdf gs (d+1) pv
+        else pure ()
+         
+
+mtRepeat :: GameState → Int → Variation → Int → Int → IO Variation
+mtRepeat !gs !d !pv !lower !upper | stopThinking = pure pv
+mtRepeat !gs !d !pv !lower !upper = do
+    let g = pv.val
+    stdout.printf "# mtRepeat d=%d g=%d lower=%d upper=%d nodes=%d moves=%s\n" d g lower upper pv.nodes (show pv.moves)
+    if lower >= upper then pure pv
+    else if lower + length pv.moves >= blackIsMate-2 then pure pv
+    else if d > 256 then pure pv
+    else do
+        let beta = if pv.val == lower then pv.val+2 else pv.val
+        let r = correctMateDistance (negaMax gs pv.hash false d (beta-1) beta)
+        let upper' = if r.val < beta  then r.val else upper
+        let lower' = if r.val >= beta then pv.val else lower
+        when (head pv.moves != head r.moves) do
+            gs.tellRemove pv 
+        cont ← gs.talkPV r.{val = r.val * gs.player.factor, depth=d, hash=empty}
+        if cont 
+            then mtRepeat gs d r lower' upper' 
+        else pure r

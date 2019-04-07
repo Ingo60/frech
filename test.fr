@@ -11,4 +11,19 @@ gs = initialGS.performUnsafe
 foldMVs pos mvs = foldM mkMove pos mvs 
 mkMove p a = applyMove p <$> case unAlgebraic (moves p) a of Just m -> Right m; _ -> Left a
 
- 
+
+mtdf :: GameState -> Int -> IO Variation 
+mtdf gs d = do
+        let pv = negaMax gs empty false 3 whiteIsMate blackIsMate
+        mtRepeat gs d pv whiteIsMate blackIsMate
+    where
+        mtRepeat :: GameState → Int → Variation → Int → Int → IO Variation
+        mtRepeat gs d pv lower upper = do
+            let g = pv.val
+            stdout.printf "# mtRepeat d=%d g=%d lower=%d upper=%d nodes=%d moves=%s\n" d g lower upper pv.nodes (show pv.moves)
+            if lower >= upper then pure pv
+            else do
+                let r = negaMax gs pv.hash false d (pv.val-1) (pv.val+1)
+                let upper' = if r.val >= pv.val then pv.val else upper
+                let lower' = if r.val <  pv.val then pv.val else lower
+                mtRepeat gs d r lower' upper'
