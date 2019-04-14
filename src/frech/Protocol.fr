@@ -3,7 +3,7 @@ module frech.Protocol
     inline(Variation.max, Variation.>, Variation.min, Variation.<) where
 
 import Control.Concurrent(MVar, forkIO, forkOS)
-import System.Random(randomIO)
+import System.Random(randomIO, randomRIO)
 import Data.List(sortBy)
 import Data.Bits(.^.)
 import Data.HashMap as HM(HashMap, values, lookup, insert, size)
@@ -245,7 +245,7 @@ protocol strategy gs  = do
                                 ++   " " ++ show ((now - since + 5) `quot` 10)  -- time  in centiseconds
                                 ++   " " ++ show nodes                    -- nodes
                                 --   " " ++ show (fold (+) 0 (map _.useful (values pv.hash)))
-                                ++   " " ++ joined " " (map algebraic pv.moves))) pvs
+                                ++   " " ++ joined " " (map algebraic (take 32 pv.moves)))) pvs
                             stdout.flush
                             let best = pvs ++ filter (
                                     \p → head p.moves `notElem` map (head . _.moves) pvs) gs.best
@@ -349,15 +349,15 @@ protocol strategy gs  = do
                             -- pong gs.pings
                             pure gs.{state=FORCED}
                 variations → do
-                    coin ← randomIO
+                    -- coin ← randomIO
                     let spv = if gs.player == WHITE then sortBy (descending _.val) variations 
                                                     else sortBy (ascending _.val) variations
-                        pv = case spv of
-                                (pv1:pv2:_) → if coin
-                                                && gs.player.factor * pv1.val > 50     -- we can't allow even less! 
-                                                && abs (pv1.val - pv2.val) < 6 
+                        equals = takeWhile (\a -> (head spv).val - a.val < 5) spv
+                    index ← randomRIO (0, length equals - 1)
+                    let pv = case equals of
+                                (pv1:pv2:_) → if   gs.player.factor * pv1.val > 50     -- we can't allow even less! 
                                                 && abs pv1.val < blackIsMate `quot` 2  -- dont gamble with mate
-                                                then pv2 else pv1
+                                                then equals !! index else pv1
                                 single -> head spv
                                 
                     unless (null pv.moves) do 

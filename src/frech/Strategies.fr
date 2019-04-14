@@ -5,9 +5,9 @@ module frech.Strategies
 
 import frege.control.Concurrent(forkOS, MVar)
 import Data.List(sortBy, maximumBy, minimumBy)
-import Data.HashMap as HM(lookup, insert, HashMap, values, keys)
+import Data.HashMap as HM(lookup, insert, HashMap, values, keys, size)
 import Lib.ForkJoin
-import Data.Bits(.&., shiftR)
+import Data.Bits(.&., .|., shiftR)
 
 import frech.Protocol
 import frech.Eval
@@ -41,7 +41,6 @@ main [arg] = do
             'negamin'   → strategyNegaMax negaSimple
             'nega'      → strategyNegaMax tryNega
             '(?i)mtdf'  → strategyMTDf
-            '(?i)mtdbi'  → strategyMTDbi 
             _           → strategyResign
     let f = File.new "./data"
     c ← f.isDirectory
@@ -602,7 +601,7 @@ strategyMTDf gs  = do
                 if cont then gs.tellNoMore else pure()
             
             else do
-                println ("# our plan: " ++ show gs.plan)     
+                println ("# our MTDf plan: " ++ show gs.plan)     
                 case gs.plan of
                     Just (plan@PV{depth,val,moves=_:_:planmv:_}) 
                         | blackIsMate - val*gs.player.factor < 100 = do
@@ -613,83 +612,88 @@ strategyMTDf gs  = do
                     Just plan → do
                         println "# let's see whether we can continue"
                         stdout.flush
-                        mtdf gs (min 8 plan.depth) plan.{depth ← subtract 2, moves ← drop 2, nodes = 1}
+                        tryMTDf gs plan.hash 4 [] allMoves
                     other → do
                         println("# no plan at all")
                         stdout.flush
-                        mtdf gs 5 (correctMateDistance $ negaMax gs empty false 4 whiteIsMate blackIsMate)
+                        tryMTDf gs empty 4 [] allMoves
 
-strategyMTDbi :: Strategy
-strategyMTDbi gs  = do
-        let suggested = fold (\h\m → insert m 2 h) empty (fromMaybe [] (lookup gs.current gs.openingMap)) 
-            allMoves = orderedMoves gs.current suggested (moves gs.current)
-        println "# in strategyMTDf"
-        stdout.flush
-        if length allMoves == 1
-            then do 
-                cont ← gs.talkPV PV{moves=[head allMoves], val=gs.player.factor*(-9999), nodes=1, depth=1, hash=empty}
-                if cont then gs.tellNoMore else pure()
-            
+
+tryMTDf ∷ GameState → TranspositionTable → Int →  [Variation] → [Move] → IO ()
+tryMTDf gs hash  depth pvs [] = if theEndIsNear depth pvs 
+            then gs.tellNoMore
             else do
-                println ("# our plan: " ++ show gs.plan)     
-                case gs.plan of
-                    Just (plan@PV{depth,val,moves=_:_:planmv:_}) 
-                        | blackIsMate - val*gs.player.factor < 100 = do
-                            println ("# We have a mate plan: " ++ show plan)
-                            stdout.flush
-                            cont1 ← gs.talkPV plan.{depth ← subtract 2, moves ← drop 2, nodes = 1}
-                            if not cont1 then pure () else gs.tellNoMore
-                    other → do
-                        println("# no mate plan")
-                        stdout.flush
-                        mtdBi gs 5 
+                gs.tellForget
+                println ("# risk=" ++ show gs.risk ++ "%, dropped pvs: " ++ show (dropped sorted))
+                tryMTDf gs hash (depth+1) [] (varmoves goodOnes)
+    where
+        !sorted   = if gs.player == WHITE
+            then sortBy (descending Variation.val) pvs
+            else sortBy (ascending Variation.val) pvs
+        !goodOnes = takeBest 0 sorted
+        varmoves ∷ [Variation] → [Move]
+        varmoves pvs = map (head • Variation.moves) pvs
+        min = if null pvs then 0 else minimum (map (\p → p.val*gs.player.factor) pvs)
+        pvns = map (\x → x.val * gs.player.factor - min + 1) pvs
+        risk  = if inCheck gs.current gs.player || length pvs < 10 then 100 else gs.risk
+        limit = risk `percent` sum pvns
+        takeBest n []   = []
+        takeBest n (x:xs) 
+            | n > limit = []
+            | otherwise = x : takeBest (n+ x.val * gs.player.factor - min + 1) xs
+        dropped = map algebraic . map head . map _.moves . drop (length goodOnes) 
 
-    
-mtdBi :: GameState -> Int → IO ()
-mtdBi gs d = do
-        let upv = correctMateDistance (negaMax gs empty false d (blackIsMate-1) blackIsMate)
-        stdout.printf "# mtdbi upv=%d node=%d moves=%s\n" upv.val upv.nodes (show upv.moves)
-        let lpv = correctMateDistance (negaMax gs upv.hash false d (whiteIsMate+1) (whiteIsMate+2))
-        stdout.printf "# biRepeat lpv=%d node=%d moves=%s\n" lpv.val lpv.nodes (show lpv.moves)
-        pv ← if upv.val >= lpv.val 
-                then mtRepeat gs d upv lpv.val upv.val
-                else mtRepeat gs d lpv upv.val lpv.val
-        cont ← gs.talkPV pv.{val = pv.val * gs.player.factor, depth=d, hash=empty}
-        if cont then do
-            if blackIsMate - pv.val < 100 || d > 256 
-                then gs.tellNoMore 
-                else mtdf gs (d+1) pv
+tryMTDf gs hash depth [] [m] = do
+    println "# only a single move left"
+    cont ← gs.talkPV PV{moves=[m], val=0, nodes=1, depth, hash=empty}
+    if cont then gs.tellNoMore else pure()        
+        
+tryMTDf gs hash depth pvs ms
+    | stopThinking = pure ()
+    | otherwise = do
+        let m = head ms
+        println ("# tryMTDf "          ++ show depth 
+                        ++ "  checking: " ++ show m
+                        ++ "  killers: "  ++ show (keys gs.killerMoves))
+        stdout.flush
+        let pos = applyMove gs.current m
+            pv' = mtLoop gs.{history=pos:gs.history} hash 0 depth whiteIsMate blackIsMate
+            pv = pv'.{moves=m:pv'.moves, val ← (* pos.turn.factor)}
+            score = negate pv'.val
+            -- alpha' =  max alpha score
+            newKillers = fold (\h\m → h.insert m 2) gs.killerMoves 
+                            [ m.clearKiller | m ← pv.moves, m.killer ]
+            killerHash kh = case pv.moves of
+                (_:k:_) → insert k 1 kh 
+                _       → kh
+            
+            
+        println ("# tryMTDf " ++ show depth  
+             ++ " move=" ++ algebraic m ++ " score=" ++ show score)
+        -- let vs = values pv.hash
+        println ("# tryMTDf " ++ show depth 
+                    ++ " hash size=" ++ show (size pv.hash) 
+                    -- " used entries=" ++ show (length [ te | te <- vs, te.useful > 0])
+                    -- " total uses=" ++ show (fold (\acc te -> acc + te.useful) 0 vs)
+                    )
+        stdout.flush
+        continue ← gs.talkPV pv.{depth} 
+        if continue
+        then tryMTDf gs.{killerMoves=killerHash newKillers} pv.hash depth (pv:pvs) (tail ms)
         else pure ()
 
 
-mtdf :: GameState -> Int -> Variation → IO ()
-mtdf gs d f | null f.moves = strategyBest gs
-mtdf gs d f = do
-        pv ← mtRepeat gs d f.{depth=d} whiteIsMate blackIsMate
-        cont ← gs.talkPV pv.{val = pv.val * gs.player.factor, depth=d, hash=empty}
-        if cont then do
-            if blackIsMate - pv.val < 100 || d > 256 
-                then gs.tellNoMore 
-                else mtdf gs (d+1) pv
-        else pure ()
-         
+mtLoop :: GameState → TranspositionTable → Int → Int → Int → Int → Variation
+mtLoop !gs !transp !nodes !d !lower !upper
+    -- traceLn ("# mtLoop d=%d beta=%d lower=%d upper=%d".format d beta lower upper) = noPV
+    | otherwise = 
+        case correctMateDistance (negaMax gs transp false d (beta-1) beta)
+            of !pv  | lower' >= upper' = pv.{nodes = nodes+pv.nodes}
+                    | otherwise = mtLoop gs pv.hash (nodes+pv.nodes) d  lower' upper'
+                    where
+                        upper' = if pv.val <  beta  then pv.val else upper
+                        lower' = if pv.val >= beta  then pv.val else lower    
+    where 
+        !beta = avg + (avg .&. 1)
+        !avg  = (upper + lower) `quot` 2
 
-mtRepeat :: GameState → Int → Variation → Int → Int → IO Variation
-mtRepeat !gs !d !pv !lower !upper | stopThinking = pure pv
-mtRepeat !gs !d !pv !lower !upper = do
-    let g = pv.val
-    stdout.printf "# mtRepeat d=%d g=%d lower=%d upper=%d nodes=%d moves=%s\n" d g lower upper pv.nodes (show pv.moves)
-    if lower >= upper then pure pv
-    else if lower + length pv.moves >= blackIsMate-2 then pure pv
-    else if d > 256 then pure pv
-    else do
-        let beta = if pv.val == lower then pv.val+2 else pv.val
-        let r = correctMateDistance (negaMax gs pv.hash false d (beta-1) beta)
-        let upper' = if r.val < beta  then r.val else upper
-        let lower' = if r.val >= beta then pv.val else lower
-        when (head pv.moves != head r.moves) do
-            gs.tellRemove pv 
-        cont ← gs.talkPV r.{val = r.val * gs.player.factor, depth=d, hash=empty}
-        if cont 
-            then mtRepeat gs d r lower' upper' 
-        else pure r
