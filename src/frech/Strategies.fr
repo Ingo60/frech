@@ -40,6 +40,7 @@ main [arg] = do
             'ab'        → strategyAlphaBeta
             'negamin'   → strategyNegaMax negaSimple
             'nega'      → strategyNegaMax tryNega
+            'pvs'       → strategyNegaMax tryPVS
             '(?i)mtdf'  → strategyMTDf
             _           → strategyResign
     let f = File.new "./data"
@@ -491,7 +492,13 @@ strategyNegaMax tryNega gs  = do
             then do 
                 cont ← gs.talkPV PV{moves=[head allMoves], val=gs.player.factor*(-9999), nodes=1, depth=1, hash=empty}
                 if cont then gs.tellNoMore else pure()
-            else  case gs.plan of 
+            else  case gs.plan of
+                Just (plan@PV{depth,val,moves=_:_:planmv:_}) 
+                    | blackIsMate - val*gs.player.factor < 100 = do
+                        println ("# We have a mate plan: " ++ show plan)
+                        stdout.flush
+                        cont1 ← gs.talkPV plan.{depth ← subtract 2, moves ← drop 2, nodes = 1}
+                        if not cont1 then pure () else gs.tellNoMore
                 Just (plan@PV{depth,val,moves=_:_:planmv:_}) | val * gs.player.factor > 25 = do
                         println ("# We have a plan: " ++ show plan)
                         stdout.flush
@@ -697,3 +704,79 @@ mtLoop !gs !transp !nodes !d !lower !upper
         !beta = avg + (avg .&. 1)
         !avg  = (upper + lower) `quot` 2
 
+
+tryPVS :: NegaMaxWorker
+tryPVS gs hash depth alpha nodes pvs [] = if theEndIsNear depth pvs 
+            then gs.tellNoMore
+            else do
+                gs.tellForget
+                tryPVS gs hash (depth+1) whiteIsMate 0 [] (varmoves goodOnes)
+    where
+        !sorted   = if gs.player == WHITE
+            then sortBy (descending Variation.val) pvs
+            else sortBy (ascending Variation.val) pvs
+        !goodOnes = {- pruned gs.player -} sorted
+        varmoves ∷ [Variation] → [Move]
+        varmoves pvs = map (head • Variation.moves) pvs
+        
+tryPVS gs hash depth alpha nodes pvs ms
+    | stopThinking = pure ()
+    | otherwise = do
+        let m = head ms
+        println ("# tryPVS "          ++ show depth 
+                        ++ "  checking: " ++ show m
+                        ++ "  killers: "  ++ show (keys gs.killerMoves))
+        stdout.flush
+        let first = null pvs
+            pos = applyMove gs.current m
+            pv' = if first
+                then correctMateDistance (negaMax gs.{history=pos:gs.history} hash false (depth-1) whiteIsMate blackIsMate)
+                else correctMateDistance (negaMax gs.{history=pos:gs.history} hash false (depth-1) (-alpha) (1-alpha))
+            pv = pv'.{moves=m:pv'.moves, val ← (* pos.turn.factor)}
+            score = negate pv'.val
+            alpha' =  max alpha score
+            newKillers = fold (\h\m → h.insert m 2) gs.killerMoves 
+                            [ m.clearKiller | m ← pv.moves, m.killer ]
+            killerHash kh = case pv.moves of
+                (_:k:_) → insert k 1 kh 
+                _       → kh
+            
+            
+        println ("# tryPVS " ++ show depth ++ " alpha=" ++  show alpha
+             ++ " first=" ++  show first
+             ++ " move=" ++ algebraic m ++ " score=" ++ show score)
+        println ("# tryPVS " ++ show depth 
+                    ++ " hash size=" ++ show (size pv.hash) 
+                )
+        stdout.flush
+        
+        if first then do
+                continue ← gs.talkPV pv.{depth} 
+                if continue
+                then tryPVS gs.{killerMoves=killerHash newKillers} pv.hash depth alpha' 0 (pv:pvs) (tail ms)
+                else pure ()        
+        else if score <= alpha then do
+                tryPVS gs.{killerMoves=killerHash newKillers} pv.hash depth alpha' (nodes+pv.nodes) (pv:pvs) (tail ms)
+        else do
+            let pv'' = correctMateDistance (negaMax gs.{history=pos:gs.history} pv.hash false (depth-1) whiteIsMate blackIsMate)
+                pv2 = pv''.{moves=m:pv''.moves, val ← (* pos.turn.factor), nodes ← (+nodes)}
+                score = negate pv''.val
+                alpha' =  max alpha score
+                newKillers = fold (\h\m → h.insert m 2) gs.killerMoves 
+                            [ m.clearKiller | m ← pv.moves, m.killer ]
+                killerHash kh = case pv.moves of
+                    (_:k:_) → insert k 1 kh 
+                    _       → kh
+
+            println ("# tryPVS RE-SEARCH " ++ show depth ++ " alpha=" ++  show alpha
+                 ++ " first=" ++  show first
+                 ++ " move=" ++ algebraic m ++ " score=" ++ show score)
+            println ("# tryPVS " ++ show depth 
+                    ++ " hash size=" ++ show (size pv.hash) 
+                )
+            stdout.flush
+
+            continue ← gs.talkPV pv2.{depth} 
+            if continue
+            then tryPVS gs.{killerMoves=killerHash newKillers} pv2.hash depth alpha' 0 (pv2:pvs) (tail ms)
+            else pure ()
