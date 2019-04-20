@@ -1,5 +1,6 @@
 /bin/
 build/
 *.jar
+*.pgn
 *.classpath
 xboard.debug
