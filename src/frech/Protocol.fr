@@ -310,7 +310,7 @@ protocol strategy gs  = do
                 mv  ← MVar.newEmpty
                 beginThinking ()
                 let gs' = gs.{state=THINKING now, best=[], backup=[], tvar=mv, nodes=0}
-                forkIO (strategy gs')
+                forkIO (strategy gs' `catch` \(e::Exception) -> gs'.tellNoMore)
                 pure gs'
         commandProcessing cmd = case cmd of
                 EOF     → pure gs.{state=TERMINATED}   -- too bad
@@ -397,7 +397,9 @@ protocol strategy gs  = do
         collectGarbage gs = do
             gc ()                   -- now release the stuff from previous iteration
             case gs.plan of
-                Just pv -> pure gs.{plan=Just pv.{hash=cleanup [gs.current] pv.hash empty}}
+                -- Just pv -> pure gs.{plan=Just pv.{hash=cleanup [gs.current] pv.hash empty}}
+                Just pv -> case pv.{hash=cleanup [gs.current] pv.hash empty}
+                    of !cleanedPV -> pure gs.{plan=Just cleanedPV}
                 Nothing -> pure gs
         
         cleanup ∷ [Position] → TranspositionTable → TranspositionTable → TranspositionTable
