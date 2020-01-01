@@ -376,7 +376,8 @@ negaMax !gs !transp !extended !depth !alpha !beta
         -- check = inCheck pos pos.turn
         insertPV ∷ Position → Int → Int → Int → Variation → [Move] → Variation
         insertPV !pos depth !alpha !beta !pv !ms = case TR{depth, score=bound, pvMoves=pv.moves, posMoves=ms}
-                of tr | pv.val != 0 = pv.{hash = insert pos tr pv.hash}
+                of tr | depth < 3   = pv
+                      | pv.val != 0 = pv.{hash = insert pos tr pv.hash}
                       | otherwise   = pv
             where 
                 !bound = if pv.val >= beta then lowerBound pv.val
@@ -484,9 +485,10 @@ type NegaMaxWorker = GameState → TranspositionTable → Int → Int → Int �
 
 strategyNegaMax ∷ NegaMaxWorker → Strategy
 strategyNegaMax tryNega gs  = do
-        let suggested = fold (\h\m → insert m 2 h) empty (fromMaybe [] (lookup gs.current gs.openingMap)) 
+        let openings  = fromMaybe [] (lookup gs.current gs.openingMap)
+            suggested = fold (\h\m → insert m 2 h) empty openings 
             allMoves = orderedMoves gs.current suggested (moves gs.current)
-        println "# in strategyNegaMax"
+        println ("# in strategyNegaMax " ++ show (length openings) ++ " for this position") 
         stdout.flush
         if length allMoves == 1
             then do 
@@ -527,7 +529,10 @@ strategyNegaMax tryNega gs  = do
                 other → do
                     println("# no plan")
                     stdout.flush
-                    tryNega gs empty 4 whiteIsMate blackIsMate  [] allMoves
+                    when (length openings > 1) do
+                        println("# trying opening moves " ++ show openings)
+                    tryNega gs empty 4 whiteIsMate blackIsMate  [] 
+                        (if length openings > 1 then openings else allMoves)
 
 negaSimple :: NegaMaxWorker
 negaSimple gs hash depth alpha beta _ _ 
@@ -540,7 +545,7 @@ negaSimple gs hash depth alpha beta _ _
     if continue
         then if length pv.moves + 1 < depth 
                 || pv.val < whiteIsMate + 10  
-                || pv.val > blackIsMate + 10
+                || pv.val > blackIsMate - 10
                 || pv.val == 0
             then gs.tellNoMore
             else negaSimple gs hash (depth + 1) alpha beta [] []
@@ -565,14 +570,14 @@ tryNega gs hash depth alpha beta pvs ms
     | alpha >= beta = gs.tellNoMore
     | otherwise = do
         let m = head ms
-        println ("# tryNegaMax "          ++ show depth 
-                        ++ "  checking: " ++ show m
-                        ++ "  killers: "  ++ show (keys gs.killerMoves))
-        stdout.flush
+        --println ("# tryNegaMax "          ++ show depth 
+        --                ++ "  checking: " ++ show m
+        --                ++ "  killers: "  ++ show (keys gs.killerMoves))
+        --stdout.flush
         let pos = applyMove gs.current m
             pv' = correctMateDistance (negaMax gs.{history=pos:gs.history} hash false (depth-1) (-beta) (-alpha))
             pv = pv'.{moves=m:pv'.moves, val ← (* pos.turn.factor)}
-            score = negate pv'.val
+            -- score = negate pv'.val
             -- alpha' =  max alpha score
             newKillers = fold (\h\m → h.insert m 2) gs.killerMoves 
                             [ m.clearKiller | m ← pv.moves, m.killer ]
@@ -581,16 +586,16 @@ tryNega gs hash depth alpha beta pvs ms
                 _       → kh
             
             
-        println ("# tryNegaMax " ++ show depth ++ " alpha=" ++  show alpha
-             ++ " beta=" ++  show beta
-             ++ " move=" ++ algebraic m ++ " score=" ++ show score)
-        let vs = values pv.hash
-        println ("# tryNegaMax " ++ show depth 
-                    ++ " hash size=" ++ show (length vs) 
-                    -- " used entries=" ++ show (length [ te | te <- vs, te.useful > 0])
-                    -- " total uses=" ++ show (fold (\acc te -> acc + te.useful) 0 vs)
-                    )
-        stdout.flush
+        --println ("# tryNegaMax " ++ show depth ++ " alpha=" ++  show alpha
+        --     ++ " beta=" ++  show beta
+        --     ++ " move=" ++ algebraic m ++ " score=" ++ show score)
+        -- let vs = values pv.hash
+        --println ("# tryNegaMax " ++ show depth 
+        --            ++ " hash size=" ++ show (length vs) 
+        --            -- " used entries=" ++ show (length [ te | te <- vs, te.useful > 0])
+        --            -- " total uses=" ++ show (fold (\acc te -> acc + te.useful) 0 vs)
+        --            )
+        --stdout.flush
         continue ← gs.talkPV pv.{depth} 
         if continue
         then tryNega gs.{killerMoves=killerHash newKillers} pv.hash depth alpha beta (pv:pvs) (tail ms)
@@ -706,7 +711,7 @@ mtLoop !gs !transp !nodes !d !lower !upper
 
 
 tryPVS :: NegaMaxWorker
-tryPVS gs hash depth alpha nodes pvs [] = if theEndIsNear depth pvs 
+tryPVS gs hash depth alpha nodes pvs [] = if theEndIsNear depth pvs   
             then gs.tellNoMore
             else do
                 gs.tellForget
@@ -723,10 +728,10 @@ tryPVS gs hash depth alpha nodes pvs ms
     | stopThinking = pure ()
     | otherwise = do
         let m = head ms
-        println ("# tryPVS "          ++ show depth 
-                        ++ "  checking: " ++ show m
-                        ++ "  killers: "  ++ show (keys gs.killerMoves))
-        stdout.flush
+        --println ("# tryPVS "          ++ show depth 
+        --                ++ "  checking: " ++ show m
+        --                ++ "  killers: "  ++ show (keys gs.killerMoves))
+        --stdout.flush
         let first = null pvs
             pos = applyMove gs.current m
             pv' = if first
@@ -742,16 +747,16 @@ tryPVS gs hash depth alpha nodes pvs ms
                 _       → kh
             
             
-        println ("# tryPVS " ++ show depth ++ " alpha=" ++  show alpha
-             ++ " first=" ++  show first
-             ++ " move=" ++ algebraic m ++ " score=" ++ show score)
-        println ("# tryPVS " ++ show depth 
-                    ++ " hash size=" ++ show (size pv.hash) 
-                )
-        stdout.flush
+        --println ("# tryPVS " ++ show depth ++ " alpha=" ++  show alpha
+        --     ++ " first=" ++  show first
+        --     ++ " move=" ++ algebraic m ++ " score=" ++ show score)
+        --println ("# tryPVS " ++ show depth 
+        --            ++ " hash size=" ++ show (size pv.hash) 
+        --        )
+        --stdout.flush
         
         if first then do
-                continue ← gs.talkPV pv.{depth} 
+                continue ← gs.talkPV pv.{depth, hash=empty} 
                 if continue
                 then tryPVS gs.{killerMoves=killerHash newKillers} pv.hash depth alpha' 0 (pv:pvs) (tail ms)
                 else pure ()        
