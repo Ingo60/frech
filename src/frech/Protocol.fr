@@ -142,8 +142,8 @@ data GameState = GS {
         --- Time per move in milliseconds
         --- This is just enough to make approximate 10 more moves, however, 
         timePerMove ∷ GameState → Long
-        timePerMove gs =  min  3000 (gs.tc.myTime - gs.tc.oTime) `quot` 3       -- we are ahead in time 
-                        + min 10000 (max 1000 (gs.tc.myTime `quot` 25))       -- 1 second or enough to play 20 moves
+        timePerMove gs =  max (-500) (min 3000 ((gs.tc.myTime - gs.tc.oTime) `quot` 3))       -- we are ahead in time 
+                        + min 10000  (max 1000 (gs.tc.myTime `quot` 25))       -- 1 second or enough to play 20 moves
         --- tell the driver something without expecting an answer
         tellDriver :: GameState -> Input -> IO ()
         tellDriver gs inp = gs.ivar.put inp 
