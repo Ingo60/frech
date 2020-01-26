@@ -394,6 +394,7 @@ instance Show Shade where
     show LIGHT = "░"
     show DARK  = "▒"
 
+
         
 --- gives the bit number of the lowest bit
 pure native lowestBit java.lang.Long.numberOfTrailingZeros :: Fields -> Int
