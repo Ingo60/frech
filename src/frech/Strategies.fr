@@ -23,7 +23,7 @@ initialGS = do
     tvar ← MVar.newEmpty
     ivar ← MVar.newEmpty
     pure GS{history=[initialBoard], state=FORCED, player=BLACK, cores=2, name="unknown", 
-            rvar, tvar, ivar, sid=0, best=[], backup=[], nodes=0, plan = Nothing,
+            rvar, tvar, ivar, sid=0, best=Nothing, nodes=0, plan = Nothing,
             openingMap = empty, killerMoves = empty,
             risk = 100 - atoi (fromMaybe "25" (System.getProperty "frech.risk")),
             tc = TC{myTime=60000, oTime=60000, lvlMoves=40, lvlTime=600000, lvlIncr=5000}} 
@@ -211,7 +211,7 @@ strategyAlphaBeta gs  = do
                         gs.tellForget
                         if length goodOnes == 1     -- extraordinary move, like mate
                         then do
-                            cont ← gs.talkPVs goodOnes
+                            cont ← gs.talkPV (head goodOnes)
                             if cont then gs.tellNoMore else pure ()
                         else tryMoves (depth+1) whiteIsMate blackIsMate gs [] (varmoves goodOnes)
             where

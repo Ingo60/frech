@@ -63,7 +63,7 @@ goMinimum !best []       = best
 data Input = 
         Line String     --- Sent by input reader when it has read a line of input.
         | EOF           --- Sent by the input reader when there is no more input. 
-        | MV !Int ![Variation] --- Sent by strategy identified by some number when it has found a 'Move'
+        | MV !Int !Variation --- Sent by strategy identified by some number when it has found a 'Move'
         | Forget Int    --- Sent by strategy when all previously computed variations should get forgotten 
         | NoMore Int    --- Sent by strategy identified by some number when it can't find more 'Move's.
         | Remove Int Variation    ---- Sent by strategy to remove/invalidate a 'Variation'.
@@ -133,7 +133,7 @@ data GameState = GS {
                                         only input with an id that matches this 'GameState's sid
                                         is regarded as valid.
                                     -}
-        !best, !backup  :: [Variation]  --- Moves reported so far, and backup
+        !best           ∷ Maybe Variation  --- best move reported so far
         !tc             ∷  TimeControl  ---- Information for time control
         !cores          ∷ Int           --- # of cores we're allowed to use
     } 
@@ -143,7 +143,7 @@ data GameState = GS {
         --- This is just enough to make approximate 10 more moves, however, 
         timePerMove ∷ GameState → Long
         timePerMove gs =  max (-500) (min 3000 ((gs.tc.myTime - gs.tc.oTime) `quot` 3))       -- we are ahead in time 
-                        + min 10000  (max 1000 (gs.tc.myTime `quot` 25))       -- 1 second or enough to play 20 moves
+                        + (max 1000 (gs.tc.myTime `quot` 25))       -- 1 second or enough to play 20 moves
         --- tell the driver something without expecting an answer
         tellDriver :: GameState -> Input -> IO ()
         tellDriver gs inp = gs.ivar.put inp 
@@ -156,9 +156,9 @@ data GameState = GS {
         tellNoMore gs = tellDriver gs (NoMore gs.sid)
         tellForget gs = tellDriver gs (Forget gs.sid)
         talkPV :: GameState → Variation → IO Command
-        talkPV gs var = talkDriver gs (MV gs.sid [var]) 
+        talkPV gs var = talkDriver gs (MV gs.sid var) 
         talkPVs :: GameState → [Variation] → IO Command
-        talkPVs gs vars = talkDriver gs (MV gs.sid vars)
+        talkPVs gs vars = foldM (\b\v -> if b then talkDriver gs (MV gs.sid v) else pure false) true vars
         tellRemove ∷ GameState → Variation → IO ()
         tellRemove gs pv = tellDriver gs (Remove gs.sid pv) 
 
@@ -202,7 +202,7 @@ protocol strategy gs  = do
                 now ← System.currentTimeMillis ()
                 let time = max 500 (gs.timePerMove - (now - since))
                     -- when we don't have a move yet, wait at all costs, rather than to resign
-                    todo = if null gs.best && null gs.backup 
+                    todo = if isNothing gs.best 
                             then Just <$> gs.ivar.take 
                             else gs.ivar.wait time.int
                 cmd ← todo
@@ -219,40 +219,57 @@ protocol strategy gs  = do
                         pure ()
                     Just (Forget sid)
                         | sid == gs.sid = do
-                            println "# forgetting previous variations"
+                            println "# forgetting previous variation"
                             stdout.flush
-                            protocol strategy gs.{backup = gs.best, best=[]}
+                            protocol strategy gs.{best=Nothing}
                         | otherwise = protocol strategy gs
                     Just (Remove sid pv)
                         | sid == gs.sid = do
                             println ("# forgetting variation " ++ show pv)
                             stdout.flush
-                            protocol strategy gs.{best=[ p | p <- gs.best, head p.moves != head pv.moves ]}
+                            case gs.best of
+                                Nothing → protocol strategy gs
+                                Just bv → if head pv.moves == head bv.moves 
+                                            then protocol strategy gs.{best=Nothing}
+                                            else protocol strategy gs
                         | otherwise = protocol strategy gs
-                    Just (MV id pvs)
+                    Just (MV id pv)
                         | id == gs.sid = do
                             now ← System.currentTimeMillis ()
                             let continue = (now - since) < (9 * gs.timePerMove) `quot` 10
-                                nodes = fold (+) gs.nodes (map _.nodes pvs)
+                                nodes = gs.nodes + pv.nodes
                             gs.tvar.put continue
                             println ("# we have used " ++ show (now-since) 
                                         ++ "ms of "    ++ show (gs.timePerMove)
                                         ++ "ms, continue=" ++ show continue)
                             now ← System.currentTimeMillis ()
-                            mapM_ (\pv -> println (
+                            println (
                                     " " ++ show pv.depth
                                 ++  " " ++ show (gs.player.factor * pv.val)     -- score in centipawns
                                 ++   " " ++ show ((now - since + 5) `quot` 10)  -- time  in centiseconds
                                 ++   " " ++ show nodes                    -- nodes
                                 --   " " ++ show (fold (+) 0 (map _.useful (values pv.hash)))
-                                ++   " " ++ joined " " (map algebraic (take 32 pv.moves)))) pvs
+                                ++   " " ++ joined " " (map algebraic (take 32 pv.moves)))
                             stdout.flush
-                            let best = pvs ++ filter (
-                                    \p → head p.moves `notElem` map (head . _.moves) pvs) gs.best
-                                -- best = map (_.{hash=empty}) best'    
+                            oracle ← randomIO :: IO Bool
+                            let best = case gs.best of
+                                    Nothing -> Just pv
+                                    Just old ->
+                                        if not (null pv.moves) && not (null old.moves)
+                                            && head pv.moves == head old.moves
+                                            then Just pv 
+                                        else if abs (pv.val - old.val) <= 5 
+                                            then if oracle then Just pv else Just old
+                                            else if gs.player == WHITE && pv.val > old.val
+                                                then Just pv
+                                                else Just old 
+                                    
                             if continue 
                                 then protocol strategy gs.{best, nodes}
-                                else finishThinking () >> sendMove gs.{best, nodes=0} >>= collectGarbage >>= protocol strategy
+                                else finishThinking () 
+                                        >> sendMove gs.{best, nodes=0} 
+                                        >>= collectGarbage 
+                                        >>= protocol strategy
                         | otherwise = do
                             println "# ignoring move from previous strategy instance." >> stdout.flush
                             protocol strategy gs
@@ -281,11 +298,11 @@ protocol strategy gs  = do
                                 gs.tvar.offer false
                                 finishThinking () 
                                 -- pong gs.pings
-                                protocol strategy gs.{state=FORCED, best=[], backup=[], nodes=0}
+                                protocol strategy gs.{state=FORCED, best=Nothing, nodes=0}
                             '^\s*new\b' → do
                                 gs.tvar.offer false 
                                 finishThinking ()
-                                protocol strategy gs.{history=[initialBoard], best=[], backup=[],
+                                protocol strategy gs.{history=[initialBoard], best=Nothing,
                                                      nodes=0, state=PLAYING, player=BLACK}
                             "?" → sendMove gs >>= protocol strategy
                             other → do
@@ -304,12 +321,12 @@ protocol strategy gs  = do
             then do
                 println "# thinking finds game that has ended"
                 stdout.flush
-                pure gs.{state=FORCED, best=[], backup=[], nodes=0}
+                pure gs.{state=FORCED, best=Nothing, nodes=0}
             else do
                 now ← System.currentTimeMillis ()
                 mv  ← MVar.newEmpty
                 beginThinking ()
-                let gs' = gs.{state=THINKING now, best=[], backup=[], tvar=mv, nodes=0}
+                let gs' = gs.{state=THINKING now, best=Nothing, tvar=mv, nodes=0}
                 forkIO (strategy gs' `catch` \(e::Exception) -> gs'.tellNoMore)
                 pure gs'
         commandProcessing cmd = case cmd of
@@ -330,40 +347,39 @@ protocol strategy gs  = do
         -- pong (p:ps) = pong ps >> println ("pong " ++ show p) >> stdout.flush
         sendMove ∷ GameState → IO GameState
         sendMove gs = case gs.best of
-                [x] | length gs.backup > 1, 
-                      gs.player == WHITE && all (>x) gs.backup
-                        || gs.player == BLACK && all (<x) gs.backup = do
-                            println "# WARNING: WE BETTER USE THE BACKUP INSTEAD A SINGLE BAD MOVE"
-                            stdout.flush
-                            sendMove gs.{best=gs.backup, backup=[]}
+                --[x] | length gs.backup > 1, 
+                --      gs.player == WHITE && all (>x) gs.backup
+                --        || gs.player == BLACK && all (<x) gs.backup = do
+                --            println "# WARNING: WE BETTER USE THE BACKUP INSTEAD A SINGLE BAD MOVE"
+                --            stdout.flush
+                --            sendMove gs.{best=gs.backup, backup=[]}
 
-                [] 
-                    | not (null gs.backup) → do
-                            println "# WARNING: WE NEED TO USE THE BACKUP"
-                            stdout.flush
-                            sendMove gs.{best=gs.backup, backup=[]}
+                Nothing 
+                    --| not (null gs.backup) → do
+                    --        println "# WARNING: WE NEED TO USE THE BACKUP"
+                    --        stdout.flush
+                    --        sendMove gs.{best=gs.backup, backup=[]}
                     | otherwise →  do            -- now we have a problem, there is no move
                             println "# strategy busy, but no move found yet"
                             println "resign"
                             stdout.flush
-                            -- pong gs.pings
                             pure gs.{state=FORCED}
-                variations → do
+                Just pv → do
                     -- coin ← randomIO
-                    let spv = if gs.player == WHITE then sortBy (descending _.val) variations 
-                                                    else sortBy (ascending _.val) variations
-                        equals = takeWhile (\a -> (head spv).val - a.val < 5) spv
-                    index ← randomRIO (0, length equals - 1)
-                    let pv = case equals of
-                                (pv1:pv2:_) → if   gs.player.factor * pv1.val > 50     -- we can't allow even less! 
-                                                && abs pv1.val < blackIsMate `quot` 2  -- dont gamble with mate
-                                                then equals !! index else pv1
-                                single -> head spv
+                    --let spv = if gs.player == WHITE then sortBy (descending _.val) variations 
+                    --                                else sortBy (ascending _.val) variations
+                    --    equals = takeWhile (\a -> (head spv).val - a.val < 5) spv
+                    --index ← randomRIO (0, length equals - 1)
+                    --let pv = case equals of
+                    --            (pv1:pv2:_) → if   gs.player.factor * pv1.val > 50     -- we can't allow even less! 
+                    --                            && abs pv1.val < blackIsMate `quot` 2  -- dont gamble with mate
+                    --                            then equals !! index else pv1
+                    --            single -> head spv
                                 
                     unless (null pv.moves) do 
                         let m = head pv.moves
-                        println ("# sorted pvs: " ++ show (
-                            map (\p -> (algebraic (head p.moves), p.val)) spv))
+                        --println ("# sorted pvs: " ++ show (
+                        --    map (\p -> (algebraic (head p.moves), p.val)) spv))
                         println ("move " ++ algebraic m)
                         
                         -- expected = if length pv.moves > 1 then Just $! head (tail pv.moves) else Nothing
@@ -390,8 +406,7 @@ protocol strategy gs  = do
                     -- pong gs.pings
                     pure  gs.{history ← (pos.clearRootPlyCounter:), sid ← succ, plan=Just pv,
                                 state = if finished then FORCED else PLAYING,
-                                best  = [],
-                                backup = []}
+                                best  = Nothing}
 
         collectGarbage :: GameState -> IO GameState
         collectGarbage gs = pure gs.{plan ← fmap (_.{hash=empty})}
@@ -454,7 +469,7 @@ xboardCommand command gs = do
             stdout.flush
             pure gs
         '^\s*new\b'         → pure gs.{history=[initialBoard], state=PLAYING, player=BLACK,
-                                        nodes=0, plan=Nothing, best=[], backup=[], killerMoves=empty}
+                                        nodes=0, plan=Nothing, best=Nothing, killerMoves=empty}
         '^\s*quit\b'        → do
                                 gs.tvar.offer false     -- just in case
                                 pure gs.{state=TERMINATED}
@@ -469,7 +484,7 @@ xboardCommand command gs = do
                     pure gs.{state=FORCED}
                 Right p → do
                     pure gs.{history=[p], state=FORCED, 
-                            nodes=0, plan=Nothing, best=[], backup=[], killerMoves=empty}
+                            nodes=0, plan=Nothing, best=Nothing, killerMoves=empty}
         -- user makes a move
         '^\s*usermove\s+\w+\b' → do
             -- println "# in usermove"
@@ -486,7 +501,7 @@ xboardCommand command gs = do
               Just mv → do
                     let pos = applyMove p mv
                         gs' = gs.{history ← (pos.clearRootPlyCounter:), sid ← succ,
-                                    nodes=0, best=[], backup=[], killerMoves=empty}
+                                    nodes=0, best=Nothing, killerMoves=empty}
                     --println ("# after " ++ show mv)
                     --println ("# " ++ show (whatIsOn pos mv.from))
                     --println ("# " ++ show (whatIsOn pos mv.to))
