@@ -262,7 +262,9 @@ protocol strategy gs  = do
                                             then if oracle then Just pv else Just old
                                             else if gs.player == WHITE && pv.val > old.val
                                                 then Just pv
-                                                else Just old 
+                                                else if gs.player == BLACK && pv.val < old.val
+                                                    then Just pv
+                                                    else Just old 
                                     
                             if continue 
                                 then protocol strategy gs.{best, nodes}
@@ -451,7 +453,7 @@ xboardCommand command gs = do
     --stdout.flush
     gs.rvar.put  (command !~ '^\s*quit\b') 
     case command of
-        '^\s*(accepted|rejected|xboard|random|hard|easy|post)\b'    
+        '^\s*(accepted|rejected|xboard|random|hard|easy|post|computer)\b'    
                             → pure gs
         m~'^\s*cores\s+(\d+)' → case m.group 1 of
                                     Just c → do
