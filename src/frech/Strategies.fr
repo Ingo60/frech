@@ -510,9 +510,11 @@ strategyNegaMax tryNega gs  = do
                             gs.tellForget
                             let pos = applyMove gs.current planmv
                                 pv' = correctMateDistance (negaMax gs.{history=pos:gs.history} plan.hash
-                                                            false (depth-1) whiteIsMate blackIsMate)
+                                                            false (min 8 (depth-1)) 
+                                                            whiteIsMate blackIsMate)
                                 pv = pv'.{moves=planmv:pv'.moves, val ← (* pos.turn.factor), depth}
                             println ("# Plan continuation: " ++ show pv)
+                            stdout.flush
                             cont ← gs.talkPV pv
                             if gs.player.factor * pv.val > 95 `percent` gs.player.factor * val
                                 &&    (gs.player.factor * pv.val == blackIsMate         -- direct mate
@@ -621,14 +623,34 @@ strategyMTDf gs  = do
                             stdout.flush
                             cont1 ← gs.talkPV plan.{depth ← subtract 2, moves ← drop 2, nodes = 1}
                             if not cont1 then pure () else gs.tellNoMore
-                    Just plan → do
-                        println "# let's see whether we can continue"
-                        stdout.flush
-                        tryMTDf gs plan.hash 4 [] allMoves
+                        | val*gs.player.factor > 25 = do
+                            println ("# We have a plan: " ++ show plan)
+                            println "# let's see whether we can continue"
+                            stdout.flush
+                            let pos = applyMove gs.current planmv
+                                pv' = mtLoop gs.{history=pos:gs.history} plan.hash 0 
+                                    (min 9 (depth-1)) whiteIsMate blackIsMate
+                                pv = pv'.{moves=planmv:pv'.moves, val ← (* pos.turn.factor)}
+                            println ("# Plan continuation: " ++ show pv)
+                            stdout.flush
+                            cont ← gs.talkPV pv
+                            if gs.player.factor * pv.val > 95 `percent` gs.player.factor * val
+                                &&    (gs.player.factor * pv.val == blackIsMate         -- direct mate
+                                    || gs.player.factor * pv.val <  blackIsMate - 100)  -- look for shortest path anyway   
+                            then do
+                                gs.tellNoMore
+                            else do
+                                println("# We better look for another plan.")
+                                stdout.flush
+                                if cont 
+                                    then tryMTDf gs.{plan=Nothing} empty 3 [pv]  
+                                            (filter (!= planmv) allMoves)
+                                    else pure ()
+                            
                     other → do
-                        println("# no plan at all")
+                        println("# no suitable plan or plan at all")
                         stdout.flush
-                        tryMTDf gs empty 4 [] allMoves
+                        tryMTDf gs empty 3 [] allMoves
 
 
 tryMTDf ∷ GameState → TranspositionTable → Int →  [Variation] → [Move] → IO ()
@@ -647,7 +669,7 @@ tryMTDf gs hash  depth pvs [] = if theEndIsNear depth pvs
         varmoves pvs = map (head • Variation.moves) pvs
         min = if null pvs then 0 else minimum (map (\p → p.val*gs.player.factor) pvs)
         pvns = map (\x → x.val * gs.player.factor - min + 1) pvs
-        risk  = if inCheck gs.current gs.player || length pvs < 10 then 100 else gs.risk
+        risk  = if inCheck gs.current gs.player || length pvs < 9 then 100 else gs.risk
         limit = risk `percent` sum pvns
         takeBest n []   = []
         takeBest n (x:xs) 
